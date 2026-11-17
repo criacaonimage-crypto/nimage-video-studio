@@ -92,7 +92,21 @@ class MainWindow(QMainWindow):
         self._hw.pronto.connect(self.config.mostrar_hardware)
         self._hw.start()
 
+        self._limpar_renders_orfaos()
         self.ir_para(0)
+
+    def _limpar_renders_orfaos(self):
+        """Apaga resultados antigos que nenhum projeto usa mais (sobras de ajustes)."""
+        pasta = config.data_dir() / "renders"
+        if not pasta.is_dir():
+            return
+        usados = {str(Path((p["dados"].get("render") or {}).get("arquivo", ""))) for p in self.db.listar_projetos(100000)}
+        for f in pasta.glob("*.mp4"):
+            if str(f) not in usados:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
 
     # ---------- navegação ----------
     def ir_para(self, i: int):
@@ -250,7 +264,11 @@ class MainWindow(QMainWindow):
             self.nova.render = info
             self.nova.salvar()
             if antigo and antigo != info["arquivo"]:
-                Path(antigo).unlink(missing_ok=True)
+                self.previa.soltar_arquivo(antigo)   # o player segura o arquivo no Windows
+                try:
+                    Path(antigo).unlink(missing_ok=True)
+                except OSError:
+                    pass   # ainda em uso; a limpeza de renders antigos remove depois
             self._atualizar_previa()
             if tocar:
                 self.previa.tocar_resultado()

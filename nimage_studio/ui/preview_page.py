@@ -238,6 +238,12 @@ class PreviewPage(QWidget):
         self.b_ver_res.setEnabled(bool(self.resultado))
         self.b_exportar.setEnabled(bool(self.plano and self.plano.get("clipes")))
 
+    def soltar_arquivo(self, caminho: str):
+        """Para o player se ele estiver com este arquivo aberto (no Windows, arquivo aberto não pode ser apagado)."""
+        if self.player.source() == QUrl.fromLocalFile(caminho):
+            self.player.stop()
+            self.player.setSource(QUrl())
+
     def tocar_resultado(self):
         if self.resultado:
             self._fila, self._idx = [], -1
