@@ -1,6 +1,8 @@
 PySide6-Essentials>=6.7
 PySide6-Addons>=6.7
-faster-whisper>=1.1
+# Versões testadas juntas (o huggingface_hub 1.x/2.x mudou a API usada pelo faster-whisper 1.2.1)
+faster-whisper==1.2.1
+huggingface_hub>=0.23,<1.0
 scenedetect>=0.6.4
 # OpenCV 4.x: a 5.x removeu o detector de rosto (CascadeClassifier). O scenedetect exige "opencv-python".
 opencv-python>=4.8,<5

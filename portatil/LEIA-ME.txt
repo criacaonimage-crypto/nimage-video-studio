@@ -1,14 +1,16 @@
 NIMAGE VIDEO STUDIO - VERSÃO PORTÁTIL (não precisa instalar)
 
-1. Descompacte o zip inteiro numa pasta sua, por exemplo:
-   C:\Users\SEU_USUARIO\Documents\NimageVideoStudio
-   (de preferência fora de "Downloads" e fora da Área de Trabalho)
+1. ANTES de descompactar: clique com o botão direito no arquivo .zip > Propriedades >
+   marque "Desbloquear" (embaixo, na aba Geral) > OK.
 
-2. Dê dois cliques em "Abrir NIMAGE VIDEO STUDIO.bat".
-   Na primeira vez pode levar uns 20 segundos para abrir.
+2. Descompacte numa pasta sua (ex.: Documentos\NimageVideoStudio).
 
-3. Se não abrir, dê dois cliques em "Verificar (se nao abrir).bat"
-   e envie um print da janela que aparecer.
+3. Abra a pasta "programa" e dê dois cliques em "NIMAGE VIDEO STUDIO.exe".
+   Dica: botão direito nele > Mostrar mais opções > Enviar para > Área de trabalho (criar atalho).
 
-Não apague nem mova as pastas "python", "lib" e "app" - o programa usa todas.
-Seus padrões e projetos ficam salvos no computador mesmo se você substituir esta pasta por uma versão nova.
+Não apague nem mova as pastas "programa", "lib" e "app".
+Padrões e projetos ficam salvos no computador; ao baixar uma versão nova é só substituir esta pasta.
+
+Se não abrir: abra o PowerShell nesta pasta e rode
+   .\programa\python.exe .\app\run.py
+e envie um print da janela (ou o arquivo erros.log de %LOCALAPPDATA%\NimageVideoStudio).

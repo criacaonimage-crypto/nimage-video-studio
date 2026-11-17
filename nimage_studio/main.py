@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import traceback
 
@@ -73,7 +74,9 @@ def autoteste() -> int:
 
 
 def main() -> int:
-    if "--autoteste" in sys.argv:
+    if not getattr(sys, "argv", None):
+        sys.argv = [sys.executable]
+    if "--autoteste" in sys.argv or os.environ.get("NIMAGE_AUTOTESTE"):
         return autoteste()
     _log_excecoes()
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)

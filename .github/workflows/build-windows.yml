@@ -49,24 +49,52 @@ jobs:
         shell: pwsh
         run: |
           $raiz = "portable\NimageVideoStudio"
-          New-Item -ItemType Directory -Force -Path "$raiz\python","$raiz\lib","$raiz\app" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$raiz\programa","$raiz\lib","$raiz\app" | Out-Null
           Invoke-WebRequest "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip" -OutFile py.zip
-          Expand-Archive py.zip -DestinationPath "$raiz\python"
-          Set-Content -Path "$raiz\python\python312._pth" -Value "python312.zip`r`n.`r`n..\lib`r`n..\app`r`nimport site" -Encoding ascii
+          Expand-Archive py.zip -DestinationPath "$raiz\programa"
+          Set-Content -Path "$raiz\programa\python312._pth" -Value "python312.zip`r`n.`r`n..\lib`r`n..\app`r`nimport site" -Encoding ascii
+          # Lançador: cópia do pythonw.exe oficial (mantém a assinatura digital da Python Software Foundation)
+          Copy-Item "$raiz\programa\pythonw.exe" "$raiz\programa\NIMAGE VIDEO STUDIO.exe"
           python -m pip install --only-binary=:all: --target "$raiz\lib" -r requirements.txt
+          Copy-Item portatil\sitecustomize.py "$raiz\lib\"
           Copy-Item -Recurse nimage_studio "$raiz\app\nimage_studio"
           Copy-Item run.py "$raiz\app\"
           Copy-Item -Recurse ffmpeg "$raiz\app\ffmpeg"
-          Copy-Item portatil\* $raiz\
+          Copy-Item portatil\LEIA-ME.txt $raiz\
           Get-ChildItem -Recurse -Directory -Filter __pycache__ $raiz | Remove-Item -Recurse -Force
+          Get-AuthenticodeSignature "$raiz\programa\NIMAGE VIDEO STUDIO.exe" | Format-List Status, SignerCertificate
 
-      - name: Autoteste da versão portátil
+      - name: Autoteste pelo lançador "NIMAGE VIDEO STUDIO.exe"
+        shell: pwsh
+        run: |
+          $env:NIMAGE_AUTOTESTE = "1"
+          $p = Start-Process -FilePath "portable\NimageVideoStudio\programa\NIMAGE VIDEO STUDIO.exe" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content "$env:LOCALAPPDATA\NimageVideoStudio\erros.log" -ErrorAction SilentlyContinue; Write-Error "Autoteste pelo lançador falhou ($($p.ExitCode))"; exit 1 }
+          Write-Host "Lançador OK"
+
+      # ---------- teste real: Whisper + Ollama + plano + vídeo + ajuste (componentes de verdade) ----------
+      - name: Preparar Ollama e vídeo com fala
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip" -OutFile ollama.zip
+          Expand-Archive ollama.zip -DestinationPath ollama_bin
+          Start-Process -FilePath ollama_bin\ollama.exe -ArgumentList "serve" -WindowStyle Hidden
+          for ($i = 0; $i -lt 60; $i++) { try { Invoke-RestMethod http://127.0.0.1:11434/api/version | Out-Null; break } catch { Start-Sleep 2 } }
+          & ollama_bin\ollama.exe pull qwen2.5:1.5b
+          Add-Type -AssemblyName System.Speech
+          $voz = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $voz.SetOutputToWaveFile("$PWD\fala.wav")
+          $voz.Speak("Good morning everyone. Today we will talk about sales leadership. Discipline beats talent when talent has no discipline. Prospect fifteen minutes, four times a day. Thank you all.")
+          $voz.Dispose()
+          & ffmpeg\bin\ffmpeg.exe -v error -y -f lavfi -i "testsrc2=s=1280x720:r=25" -i fala.wav -shortest -c:v libx264 -pix_fmt yuv420p -c:a aac fala.mp4
+
+      - name: Teste real de ponta a ponta (versão portátil)
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          & "portable\NimageVideoStudio\python\python.exe" "portable\NimageVideoStudio\app\run.py" --autoteste
-          if ($LASTEXITCODE -ne 0) { Write-Error "Autoteste portátil falhou"; exit 1 }
+          & "portable\NimageVideoStudio\programa\python.exe" ferramentas\teste_real.py fala.mp4 qwen2.5:1.5b
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Compactar versão portátil
         shell: pwsh
@@ -103,6 +131,6 @@ jobs:
           gh release delete versao-atual --yes --cleanup-tag 2>$null
           $inst = Get-ChildItem Output\*.exe | Select-Object -First 1
           $notas = "Build ${{ github.run_number }} - commit ${{ github.sha }}`n`n" +
-                   "NimageVideoStudio-Portatil.zip: NÃO precisa instalar. Descompacte e abra 'Abrir NIMAGE VIDEO STUDIO.bat'.`n" +
+                   "NimageVideoStudio-Portatil.zip: NÃO precisa instalar. Desbloqueie o zip (Propriedades > Desbloquear), descompacte e abra programa\NIMAGE VIDEO STUDIO.exe.`n" +
                    "Instalador (.exe): use quando a TI liberar a instalação."
           gh release create versao-atual NimageVideoStudio-Portatil.zip $inst.FullName --title "Versão atual" --notes $notas --target ${{ github.sha }} --latest

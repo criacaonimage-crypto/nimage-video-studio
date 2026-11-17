@@ -17,6 +17,9 @@ from . import config
 # O acelerador de download "hf_xet" (sem assinatura digital) é barrado pelo Controle de Aplicativo
 # Inteligente do Windows. Desligado, o modelo de transcrição é baixado pelo método HTTP comum.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+# Modelos de transcrição ficam na pasta de dados do programa (cache padrão do Hugging Face).
+os.environ.setdefault("HF_HOME", str(config.data_dir() / "modelos_whisper"))
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 ANALISE_VERSAO = 1
 Progresso = Callable[[str, float], None]   # (mensagem, fração 0..1 da etapa)
@@ -119,8 +122,7 @@ def cuda_disponivel_para_whisper() -> bool:
 
 def _carregar_whisper(modelo: str, device: str, compute: str):
     from faster_whisper import WhisperModel
-    return WhisperModel(modelo, device=device, compute_type=compute,
-                        download_root=str(config.data_dir() / "modelos_whisper"))
+    return WhisperModel(modelo, device=device, compute_type=compute)
 
 
 def ler_wav(audio: Path):
