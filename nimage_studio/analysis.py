@@ -123,9 +123,28 @@ def _carregar_whisper(modelo: str, device: str, compute: str):
                         download_root=str(config.data_dir() / "modelos_whisper"))
 
 
+def ler_wav(audio: Path):
+    """Lê o WAV 16 kHz mono (já extraído pelo FFmpeg) como array float32.
+
+    Assim o faster-whisper não precisa decodificar o arquivo com a biblioteca PyAV, cujas versões
+    novas mudaram a API (erro "unexpected keyword argument 'metadata_errors'").
+    """
+    import wave
+    import numpy as np
+    with wave.open(str(audio), "rb") as w:
+        if w.getsampwidth() != 2:
+            raise AnaliseErro("Formato de áudio inesperado.")
+        dados = w.readframes(w.getnframes())
+        canais = w.getnchannels()
+    arr = np.frombuffer(dados, dtype=np.int16).astype(np.float32) / 32768.0
+    if canais > 1:
+        arr = arr.reshape(-1, canais).mean(axis=1)
+    return arr
+
+
 def _rodar_whisper(wm, audio: Path, duracao: float, progresso: Progresso, cancelado) -> list[dict]:
     segs_out: list[dict] = []
-    segmentos, _info = wm.transcribe(str(audio), language="pt", word_timestamps=True, vad_filter=True,
+    segmentos, _info = wm.transcribe(ler_wav(audio), language="pt", word_timestamps=True, vad_filter=True,
                                      beam_size=5, condition_on_previous_text=False)
     for s in segmentos:
         if cancelado():

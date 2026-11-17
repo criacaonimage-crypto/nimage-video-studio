@@ -358,3 +358,29 @@ def test_cuda_libs_escolha_e_extracao(tmp_path):
         z.writestr("nvidia/cublas/include/x.h", b"h")
     assert cuda_libs.extrair_dlls(whl, tmp_path / "out") == 1
     assert (tmp_path / "out" / "cublas64_12.dll").exists()
+
+
+def test_transcricao_recebe_audio_como_array(dados, video_com_cortes, tmp_path):
+    """O áudio vai para o Whisper como array (sem PyAV)."""
+    import numpy as np
+    wav = analysis.extrair_audio(str(video_com_cortes), tmp_path / "a.wav")
+    recebido = {}
+
+    class Palavra:
+        def __init__(s, w, a, b): s.word, s.start, s.end = w, a, b
+
+    class Seg:
+        start, end, text = 0.5, 2.0, " olá mundo"
+        words = [Palavra(" olá", 0.5, 1.0), Palavra(" mundo", 1.0, 2.0)]
+
+    class FakeWM:
+        def transcribe(s, audio, **kw):
+            recebido["audio"] = audio
+            return iter([Seg()]), None
+
+    segs = analysis._rodar_whisper(FakeWM(), wav, 24, lambda m, f: None, lambda: False)
+    a = recebido["audio"]
+    assert isinstance(a, np.ndarray) and a.dtype == np.float32 and abs(len(a) / 16000 - 24) < 0.2
+    assert float(np.abs(a).max()) <= 1.0
+    assert segs == [{"inicio": 0.5, "fim": 2.0, "texto": "olá mundo",
+                     "palavras": [{"p": "olá", "i": 0.5, "f": 1.0}, {"p": "mundo", "i": 1.0, "f": 2.0}]}]
