@@ -88,6 +88,7 @@ def _ffmpeg(args: list[str], duracao: float, progresso: Callable[[float], None],
             for linha in proc.stdout:
                 if cancelado():
                     proc.kill()
+                    proc.wait()   # no Windows o arquivo só é liberado depois que o processo fecha
                     raise RenderCancelado()
                 if linha.startswith("out_time_us=") or linha.startswith("out_time_ms="):
                     try:
@@ -100,6 +101,7 @@ def _ffmpeg(args: list[str], duracao: float, progresso: Callable[[float], None],
         finally:
             if proc.poll() is None:
                 proc.kill()
+                proc.wait()
         if proc.returncode != 0:
             err.seek(0)
             msg = err.read().decode("utf-8", "replace").strip().splitlines()
@@ -128,6 +130,8 @@ def centro_do_rosto(video: str, ini: float, fim: float) -> tuple[float, float] |
     try:
         import cv2
     except ImportError:
+        return None
+    if not hasattr(cv2, "CascadeClassifier"):   # OpenCV sem o módulo de detecção → enquadra no centro
         return None
     cascata = config.resources_dir() / "haarcascade_frontalface_default.xml"   # vem com o programa
     det = cv2.CascadeClassifier(str(cascata))
@@ -367,7 +371,7 @@ def renderizar(plano: dict, saida: str, opcoes: dict | None = None, progresso: P
         raise RenderErro("Vídeos originais não encontrados (HD externo desconectado?):\n" + "\n".join(faltando))
     limpar_cache()
 
-    with tempfile.TemporaryDirectory(prefix="nimage_render_") as tmpd:
+    with tempfile.TemporaryDirectory(prefix="nimage_render_", ignore_cleanup_errors=True) as tmpd:
         tmp = Path(tmpd)
         segs: list[tuple[Path, dict | None]] = []   # (arquivo, clipe ou None p/ vinhetas/cartões)
         total_passos = len(clipes) + 2

@@ -39,7 +39,7 @@ def autoteste() -> int:
     from importlib.resources import files
     import cv2
     vad = [p.name for p in files("faster_whisper").joinpath("assets").iterdir()]
-    rosto = not cv2.CascadeClassifier(str(config.resources_dir() / "haarcascade_frontalface_default.xml")).empty()
+    rosto = hasattr(cv2, "CascadeClassifier") and not cv2.CascadeClassifier(str(config.resources_dir() / "haarcascade_frontalface_default.xml")).empty()
     print(f"faster-whisper OK · ctranslate2 {ctranslate2.__version__} · scenedetect {scenedetect.__version__} · "
           f"VAD {vad} · detector de rosto {rosto} · ffmpeg {config.ffmpeg_path()} · "
           f"CUDA para transcrição: {cuda_disponivel_para_whisper()}")
