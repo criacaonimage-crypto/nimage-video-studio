@@ -1,4 +1,5 @@
-PySide6>=6.7
+PySide6-Essentials>=6.7
+PySide6-Addons>=6.7
 faster-whisper>=1.1
 scenedetect>=0.6.4
 # OpenCV 4.x: a 5.x removeu o detector de rosto (CascadeClassifier). O scenedetect exige "opencv-python".

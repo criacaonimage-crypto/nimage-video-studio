@@ -1,11 +1,14 @@
-# Gera o instalador do NIMAGE VIDEO STUDIO para Windows a cada envio ao GitHub.
-# O arquivo fica em: aba "Actions" > execução mais recente > "Artifacts".
+# Gera o NIMAGE VIDEO STUDIO para Windows a cada envio ao GitHub.
+# Os arquivos ficam na página de versões: Releases > "Versão atual".
 name: Build Windows
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -15,7 +18,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.12.10"   # mesma versão do Python portátil (embeddable)
 
       - name: Instalar dependências
         run: |
@@ -41,6 +44,35 @@ jobs:
           Write-Host "Código de saída do pytest: $LASTEXITCODE"
           exit $LASTEXITCODE
 
+      # ---------- versão portátil: Python oficial + bibliotecas + programa, sem instalador ----------
+      - name: Montar versão portátil
+        shell: pwsh
+        run: |
+          $raiz = "portable\NimageVideoStudio"
+          New-Item -ItemType Directory -Force -Path "$raiz\python","$raiz\lib","$raiz\app" | Out-Null
+          Invoke-WebRequest "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip" -OutFile py.zip
+          Expand-Archive py.zip -DestinationPath "$raiz\python"
+          Set-Content -Path "$raiz\python\python312._pth" -Value "python312.zip`r`n.`r`n..\lib`r`n..\app`r`nimport site" -Encoding ascii
+          python -m pip install --only-binary=:all: --target "$raiz\lib" -r requirements.txt
+          Copy-Item -Recurse nimage_studio "$raiz\app\nimage_studio"
+          Copy-Item run.py "$raiz\app\"
+          Copy-Item -Recurse ffmpeg "$raiz\app\ffmpeg"
+          Copy-Item portatil\* $raiz\
+          Get-ChildItem -Recurse -Directory -Filter __pycache__ $raiz | Remove-Item -Recurse -Force
+
+      - name: Autoteste da versão portátil
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          & "portable\NimageVideoStudio\python\python.exe" "portable\NimageVideoStudio\app\run.py" --autoteste
+          if ($LASTEXITCODE -ne 0) { Write-Error "Autoteste portátil falhou"; exit 1 }
+
+      - name: Compactar versão portátil
+        shell: pwsh
+        run: Compress-Archive -Path portable\NimageVideoStudio -DestinationPath NimageVideoStudio-Portatil.zip
+
+      # ---------- instalador (para quando a TI liberar / com assinatura digital) ----------
       - name: Gerar executável
         run: pyinstaller NimageVideoStudio.spec --noconfirm
 
@@ -62,8 +94,15 @@ jobs:
           & $iscc installer.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: NimageVideoStudio-Instalador
-          path: Output/*.exe
-          retention-days: 5
+      # ---------- publicar na página de versões ----------
+      - name: Publicar "Versão atual"
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete versao-atual --yes --cleanup-tag 2>$null
+          $inst = Get-ChildItem Output\*.exe | Select-Object -First 1
+          $notas = "Build ${{ github.run_number }} - commit ${{ github.sha }}`n`n" +
+                   "NimageVideoStudio-Portatil.zip: NÃO precisa instalar. Descompacte e abra 'Abrir NIMAGE VIDEO STUDIO.bat'.`n" +
+                   "Instalador (.exe): use quando a TI liberar a instalação."
+          gh release create versao-atual NimageVideoStudio-Portatil.zip $inst.FullName --title "Versão atual" --notes $notas --target ${{ github.sha }} --latest
