@@ -1,0 +1,105 @@
+"""Informações de vídeo (ffprobe) e miniaturas (ffmpeg). Nunca altera o arquivo original."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+
+from . import config
+
+EXTENSOES_VIDEO = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".mts", ".m2ts", ".webm", ".wmv", ".mxf"}
+
+
+class MediaError(Exception):
+    pass
+
+
+def eh_video(caminho: str | Path) -> bool:
+    return Path(caminho).suffix.lower() in EXTENSOES_VIDEO
+
+
+def probe(caminho: str | Path) -> dict:
+    ffprobe = config.ffprobe_path()
+    if not ffprobe:
+        raise MediaError("ffprobe não encontrado. Verifique a instalação do FFmpeg em Configurações.")
+    caminho = str(caminho)
+    r = config.run([ffprobe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", caminho], timeout=60)
+    if r.returncode != 0:
+        raise MediaError(f"Não foi possível ler o arquivo: {r.stderr.strip()[:300]}")
+    info = json.loads(r.stdout or "{}")
+    streams = info.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"
+                  and not s.get("disposition", {}).get("attached_pic")), None)
+    if video is None:
+        raise MediaError("O arquivo não contém trilha de vídeo.")
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    fmt = info.get("format", {})
+
+    largura, altura = int(video.get("width", 0)), int(video.get("height", 0))
+    rot = 0
+    for sd in video.get("side_data_list", []) or []:
+        if "rotation" in sd:
+            rot = int(float(sd["rotation"]))
+    rot = int(video.get("tags", {}).get("rotate", rot) or 0)
+    if abs(rot) % 180 == 90:  # vídeo de celular gravado em pé
+        largura, altura = altura, largura
+
+    fps = 0.0
+    num, _, den = (video.get("avg_frame_rate") or "0/1").partition("/")
+    try:
+        fps = float(num) / float(den or 1) if float(den or 1) else 0.0
+    except ValueError:
+        pass
+
+    duracao = float(fmt.get("duration") or video.get("duration") or 0)
+    return {
+        "caminho": caminho,
+        "nome": os.path.basename(caminho),
+        "duracao": duracao,
+        "largura": largura,
+        "altura": altura,
+        "fps": round(fps, 3),
+        "codec_video": video.get("codec_name", ""),
+        "codec_audio": audio.get("codec_name", "") if audio else "",
+        "tem_audio": audio is not None,
+        "formato": Path(caminho).suffix.lstrip(".").upper(),
+        "tamanho_bytes": int(fmt.get("size") or 0),
+    }
+
+
+def miniatura(caminho: str | Path, duracao: float | None = None, largura: int = 480) -> str:
+    """Gera (ou reaproveita do cache) uma miniatura PNG e retorna o caminho."""
+    ffmpeg = config.ffmpeg_path()
+    if not ffmpeg:
+        raise MediaError("ffmpeg não encontrado.")
+    p = Path(caminho)
+    chave = hashlib.sha1(f"{p.resolve()}|{p.stat().st_mtime}|{largura}".encode()).hexdigest()[:20]
+    destino = config.cache_dir() / "miniaturas" / f"{chave}.jpg"
+    if destino.exists():
+        return str(destino)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    t = max(0.0, min((duracao or 0) * 0.1, 5.0))
+    r = config.run([ffmpeg, "-y", "-v", "error", "-ss", f"{t:.2f}", "-i", str(p), "-frames:v", "1",
+                    "-vf", f"scale={largura}:-2", "-q:v", "3", str(destino)], timeout=60)
+    if r.returncode != 0 or not destino.exists():
+        # Alguns arquivos falham com -ss antes do -i; tenta o primeiro quadro.
+        r = config.run([ffmpeg, "-y", "-v", "error", "-i", str(p), "-frames:v", "1",
+                        "-vf", f"scale={largura}:-2", str(destino)], timeout=60)
+        if r.returncode != 0 or not destino.exists():
+            raise MediaError(f"Não foi possível gerar miniatura: {r.stderr.strip()[:200]}")
+    return str(destino)
+
+
+def formatar_duracao(seg: float) -> str:
+    seg = int(round(seg))
+    h, m, s = seg // 3600, (seg % 3600) // 60, seg % 60
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def formatar_tamanho(b: int) -> str:
+    for unidade in ("B", "KB", "MB", "GB"):
+        if b < 1024:
+            return f"{b:.0f} {unidade}"
+        b /= 1024
+    return f"{b:.1f} TB"

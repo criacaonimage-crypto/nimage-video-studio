@@ -1,0 +1,67 @@
+# Gera o instalador do NIMAGE VIDEO STUDIO para Windows a cada envio ao GitHub.
+# O arquivo fica em: aba "Actions" > execução mais recente > "Artifacts".
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pytest
+
+      - name: Baixar FFmpeg (com suporte a NVENC)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
+          $dir = Get-ChildItem ffmpeg_tmp | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path ffmpeg\bin | Out-Null
+          Copy-Item "$($dir.FullName)\bin\ffmpeg.exe","$($dir.FullName)\bin\ffprobe.exe" ffmpeg\bin\
+          Copy-Item "$($dir.FullName)\LICENSE.txt" ffmpeg\LICENSE.txt
+
+      - name: Testes
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $env:PATH = "$PWD\ffmpeg\bin;$env:PATH"
+          python -m pytest -q
+
+      - name: Gerar executável
+        run: pyinstaller NimageVideoStudio.spec --noconfirm
+
+      - name: Incluir FFmpeg
+        shell: pwsh
+        run: Copy-Item -Recurse ffmpeg dist\NimageVideoStudio\ffmpeg
+
+      - name: Autoteste do executável
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\NimageVideoStudio\NimageVideoStudio.exe -ArgumentList "--autoteste" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "Autoteste falhou ($($p.ExitCode))"; exit 1 }
+
+      - name: Gerar instalador
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NimageVideoStudio-Instalador
+          path: Output/*.exe
+          retention-days: 5

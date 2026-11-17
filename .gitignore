@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+Output/
+ffmpeg/
+ffmpeg_tmp/
+ffmpeg.zip
+*.zip
+.venv/

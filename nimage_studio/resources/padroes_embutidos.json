@@ -1,0 +1,64 @@
+{
+  "versao": 1,
+  "observacao": "Padrões que vão dentro do programa. Para atualizar: no programa, Padrões > Exportar para o programa, substituir este arquivo no GitHub e gerar nova versão.",
+  "padroes": [
+    {
+      "slug": "arena-de-vendas",
+      "padrao": {
+        "nome": "Arena de Vendas®",
+        "descricao": "Alta performance e energia comercial.",
+        "formato_padrao": {"largura": 1080, "altura": 1920},
+        "identidade": {
+          "fonte_titulo": "Neue Plak Black",
+          "fonte_texto": "Neue Plak",
+          "cores": {"principal": "#8800FF", "secundaria": "#190026", "fundo": "#10001E", "texto": "#FFFFFF", "destaque": "#8800FF"},
+          "tamanho_titulo": 84,
+          "elementos_graficos": "Diagonais, faixas e recortes angulares, feixes de luz roxa, molduras geométricas. Sem transparências e sem tons pastéis.",
+          "legenda": {"estilo": "Palavra-chave em destaque", "posicao": "Abaixo do queixo", "tamanho": 56, "cor": "#FFFFFF", "cor_destaque": "#8800FF", "caixa_alta_destaque": true}
+        },
+        "edicao": {"ritmo": "Rápido", "cortes": "Muitos", "duracao_alvo_seg": 60, "transicoes": "Dinâmicas", "abertura": "Frase de impacto", "encerramento": "Vinheta", "intensidade": "Enérgica"},
+        "audio": {"tom_musica": "Enérgica", "volume_musica": 22, "abaixar_musica_na_fala": true, "efeitos_sonoros": true},
+        "regras": {"obrigatorios": "Escrever sempre \"Arena de Vendas®\" com ®.", "preferencias": "", "opcionais": "", "restricoes": "Nunca usar laranja. Não misturar com a identidade Ben-Geder.", "exemplos_aprovados": []}
+      }
+    },
+    {
+      "slug": "ben-geder",
+      "padrao": {
+        "nome": "Ben-Geder Trindade",
+        "descricao": "Cinematográfico e editorial.",
+        "formato_padrao": {"largura": 1080, "altura": 1920},
+        "identidade": {
+          "fonte_titulo": "Source Serif 4 ExtraBold",
+          "fonte_texto": "Source Serif 4",
+          "cores": {"principal": "#FF6600", "secundaria": "#202020", "fundo": "#000000", "texto": "#FFFFFF", "destaque": "#FF6600"},
+          "tamanho_titulo": 76,
+          "elementos_graficos": "Minimalista, fundos escuros, destaques estratégicos em laranja.",
+          "legenda": {"estilo": "Palavra-chave em destaque", "posicao": "Abaixo do queixo", "tamanho": 52, "cor": "#FFFFFF", "cor_destaque": "#FF6600", "caixa_alta_destaque": false}
+        },
+        "edicao": {"ritmo": "Moderado", "cortes": "Moderados", "duracao_alvo_seg": 60, "transicoes": "Suaves", "abertura": "Frase de impacto", "encerramento": "Logo", "intensidade": "Equilibrada"},
+        "audio": {"tom_musica": "Inspiradora", "volume_musica": 18, "abaixar_musica_na_fala": true, "efeitos_sonoros": false},
+        "regras": {"obrigatorios": "", "preferencias": "Manter a captação original.", "opcionais": "", "restricoes": "Sem desfoque de fundo, sem recorte do corpo do Ben, sem fonte Montserrat, sem excesso de efeitos.", "exemplos_aprovados": []}
+      }
+    },
+    {
+      "slug": "next-level",
+      "padrao": {"nome": "NEXT LEVEL", "descricao": "Formação em vendas da Nimage.", "formato_padrao": {"largura": 1920, "altura": 1080},
+        "edicao": {"ritmo": "Moderado", "cortes": "Moderados", "duracao_alvo_seg": 600, "transicoes": "Suaves", "abertura": "Título", "encerramento": "Logo", "intensidade": "Equilibrada"}}
+    },
+    {
+      "slug": "redes-sociais",
+      "padrao": {"nome": "Redes Sociais", "descricao": "Cortes curtos para Reels e Stories.", "formato_padrao": {"largura": 1080, "altura": 1920},
+        "edicao": {"ritmo": "Muito rápido", "cortes": "Muitos", "duracao_alvo_seg": 45, "transicoes": "Dinâmicas", "abertura": "Frase de impacto", "encerramento": "Chamada para ação", "intensidade": "Enérgica"}}
+    },
+    {
+      "slug": "palestras-e-eventos",
+      "padrao": {"nome": "Palestras e Eventos", "descricao": "Registro e destaques de palestras e eventos.", "formato_padrao": {"largura": 1920, "altura": 1080},
+        "edicao": {"ritmo": "Moderado", "cortes": "Poucos", "duracao_alvo_seg": 180, "transicoes": "Suaves", "abertura": "Vinheta", "encerramento": "Logo", "intensidade": "Equilibrada"}}
+    },
+    {
+      "slug": "institucional-e-comercial",
+      "padrao": {"nome": "Institucional e Comercial", "descricao": "Vídeos institucionais e apresentações comerciais.", "formato_padrao": {"largura": 1920, "altura": 1080},
+        "edicao": {"ritmo": "Moderado", "cortes": "Moderados", "duracao_alvo_seg": 90, "transicoes": "Suaves", "abertura": "Título", "encerramento": "Logo", "intensidade": "Equilibrada"}}
+    }
+  ]
+}
