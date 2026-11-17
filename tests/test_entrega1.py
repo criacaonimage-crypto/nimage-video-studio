@@ -223,3 +223,27 @@ def test_fluxo_interface(videos, dados, monkeypatch):
     pp.salvar()
     assert "Institucional v2" in [n2.padrao.itemText(i) for i in range(n2.padrao.count())]
     w2.close()
+
+
+def test_probe_video_girado(dados, tmp_path):
+    """Vídeo de celular gravado em pé (metadado de rotação) aparece como vertical."""
+    plano = tmp_path / "p.mp4"
+    subprocess.run([config.ffmpeg_path(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=640x360:d=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(plano)], check=True)
+    girado = tmp_path / "girado.mp4"
+    subprocess.run([config.ffmpeg_path(), "-v", "error", "-y", "-display_rotation", "90", "-i", str(plano),
+                    "-c", "copy", str(girado)], check=True)
+    info = media.probe(girado)
+    assert (info["largura"], info["altura"]) == (360, 640)
+
+
+def test_ffmpeg_bloqueado_mensagem_clara(monkeypatch):
+    import subprocess as sp
+    err = OSError("bloqueado")
+    err.winerror = 4551
+
+    def falha(*a, **k):
+        raise err
+    monkeypatch.setattr(sp, "run", falha)
+    with pytest.raises(config.BloqueadoPeloWindows, match="Controle de Aplicativo"):
+        config.run(["C:/x/ffmpeg.exe", "-version"])

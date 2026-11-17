@@ -25,21 +25,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pytest
 
-      - name: Baixar FFmpeg (com suporte a NVENC)
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
-          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
-          $dir = Get-ChildItem ffmpeg_tmp | Select-Object -First 1
-          New-Item -ItemType Directory -Force -Path ffmpeg\bin | Out-Null
-          Copy-Item "$($dir.FullName)\bin\ffmpeg.exe","$($dir.FullName)\bin\ffprobe.exe" ffmpeg\bin\
-          Copy-Item "$($dir.FullName)\LICENSE.txt" ffmpeg\LICENSE.txt
-
       - name: Testes
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          $env:PATH = "$PWD\ffmpeg\bin;$env:PATH"
           python -m pytest -q -p no:cacheprovider
           Write-Host "Código de saída do pytest: $LASTEXITCODE"
           exit $LASTEXITCODE
@@ -59,7 +48,6 @@ jobs:
           Copy-Item portatil\sitecustomize.py "$raiz\lib\"
           Copy-Item -Recurse nimage_studio "$raiz\app\nimage_studio"
           Copy-Item run.py "$raiz\app\"
-          Copy-Item -Recurse ffmpeg "$raiz\app\ffmpeg"
           Copy-Item portatil\LEIA-ME.txt $raiz\
           Get-ChildItem -Recurse -Directory -Filter __pycache__ $raiz | Remove-Item -Recurse -Force
           Get-AuthenticodeSignature "$raiz\programa\NIMAGE VIDEO STUDIO.exe" | Format-List Status, SignerCertificate
@@ -86,7 +74,8 @@ jobs:
           $voz.SetOutputToWaveFile("$PWD\fala.wav")
           $voz.Speak("Good morning everyone. Today we will talk about sales leadership. Discipline beats talent when talent has no discipline. Prospect fifteen minutes, four times a day. Thank you all.")
           $voz.Dispose()
-          & ffmpeg\bin\ffmpeg.exe -v error -y -f lavfi -i "testsrc2=s=1280x720:r=25" -i fala.wav -shortest -c:v libx264 -pix_fmt yuv420p -c:a aac fala.mp4
+          $ff = python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"
+          & $ff -v error -y -f lavfi -i "testsrc2=s=1280x720:r=25" -i fala.wav -shortest -c:v libx264 -pix_fmt yuv420p -c:a aac fala.mp4
 
       - name: Teste real de ponta a ponta (versão portátil)
         shell: pwsh
@@ -103,10 +92,6 @@ jobs:
       # ---------- instalador (para quando a TI liberar / com assinatura digital) ----------
       - name: Gerar executável
         run: pyinstaller NimageVideoStudio.spec --noconfirm
-
-      - name: Incluir FFmpeg
-        shell: pwsh
-        run: Copy-Item -Recurse ffmpeg dist\NimageVideoStudio\ffmpeg
 
       - name: Autoteste do executável
         shell: pwsh

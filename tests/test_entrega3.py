@@ -75,8 +75,11 @@ def _plano(midia, transicao="Corte seco", W=1080, H=1920, estilo="Palavra-chave 
 
 
 def _streams(arq):
-    r = config.run([config.ffprobe_path(), "-v", "error", "-show_streams", "-show_format", "-of", "json", str(arq)])
-    return json.loads(r.stdout)
+    """Tipos e codecs das trilhas do arquivo (via PyAV, sem ffprobe)."""
+    import av
+    with av.open(str(arq)) as c:
+        return {"streams": [{"codec_type": s.type, "codec_name": s.codec_context.name,
+                             "pix_fmt": getattr(s.codec_context, "pix_fmt", None)} for s in c.streams]}
 
 
 def test_render_completo_vertical(dados, midia, tmp_path):

@@ -81,9 +81,15 @@ def _ffmpeg(args: list[str], duracao: float, progresso: Callable[[float], None],
     if not ff:
         raise RenderErro("FFmpeg não encontrado.")
     with tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen([ff, "-y", "-hide_banner", "-nostats", "-progress", "pipe:1", *args],
-                                stdout=subprocess.PIPE, stderr=err, stdin=subprocess.DEVNULL, cwd=cwd,
-                                creationflags=config.CREATE_NO_WINDOW, text=True, encoding="utf-8", errors="replace")
+        try:
+            proc = subprocess.Popen([ff, "-y", "-hide_banner", "-nostats", "-progress", "pipe:1", *args],
+                                    stdout=subprocess.PIPE, stderr=err, stdin=subprocess.DEVNULL, cwd=cwd,
+                                    creationflags=config.CREATE_NO_WINDOW, text=True, encoding="utf-8",
+                                    errors="replace")
+        except OSError as e:
+            if getattr(e, "winerror", None) == config.BLOQUEIO_WINDOWS:
+                raise RenderErro(config.mensagem_bloqueio(ff)) from e
+            raise
         try:
             for linha in proc.stdout:
                 if cancelado():

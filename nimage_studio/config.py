@@ -55,7 +55,7 @@ def _find_tool(name: str) -> str | None:
     exe = name + (".exe" if os.name == "nt" else "")
     bases = [app_dir()]
     if getattr(sys, "frozen", False):
-        bases.insert(0, Path(sys.executable).parent)  # pasta do .exe (FFmpeg vai ao lado dele)
+        bases.insert(0, Path(sys.executable).parent)
     for base in bases:
         for candidate in (base / "ffmpeg" / "bin" / exe, base / "ffmpeg" / exe, base / exe):
             if candidate.exists():
@@ -63,19 +63,53 @@ def _find_tool(name: str) -> str | None:
     return shutil.which(name)
 
 
+def _ffmpeg_imageio() -> str | None:
+    """FFmpeg do pacote imageio-ffmpeg: arquivo fixo e muito difundido, que o Controle de Aplicativo
+    Inteligente do Windows reconhece (as compilações "do dia" são bloqueadas por serem desconhecidas)."""
+    try:
+        import imageio_ffmpeg
+        caminho = imageio_ffmpeg.get_ffmpeg_exe()
+        return caminho if caminho and Path(caminho).exists() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def ffmpeg_path() -> str | None:
-    return _find_tool("ffmpeg")
+    if os.environ.get("NIMAGE_FFMPEG"):
+        return os.environ["NIMAGE_FFMPEG"]
+    if os.name == "nt":
+        return _ffmpeg_imageio() or _find_tool("ffmpeg")
+    return _find_tool("ffmpeg") or _ffmpeg_imageio()
 
 
 def ffprobe_path() -> str | None:
+    """Opcional: a leitura dos vídeos usa a biblioteca PyAV; o ffprobe só é usado se ela falhar."""
     return _find_tool("ffprobe")
 
 
+BLOQUEIO_WINDOWS = 4551
+
+
+def mensagem_bloqueio(arquivo: str) -> str:
+    return (f"O Windows (Controle de Aplicativo Inteligente) bloqueou o arquivo:\n{arquivo}\n\n"
+            "Isso costuma acontecer com arquivos novos baixados da internet. Tente: botão direito no zip > "
+            "Propriedades > Desbloquear, e descompacte de novo. Se continuar, envie esta mensagem ao suporte.")
+
+
+class BloqueadoPeloWindows(OSError):
+    pass
+
+
 def run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=timeout, creationflags=CREATE_NO_WINDOW,
-    )
+    try:
+        return subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, creationflags=CREATE_NO_WINDOW,
+        )
+    except OSError as e:
+        if getattr(e, "winerror", None) == BLOQUEIO_WINDOWS:
+            raise BloqueadoPeloWindows(mensagem_bloqueio(cmd[0])) from e
+        raise
 
 
 def detect_gpu() -> dict:

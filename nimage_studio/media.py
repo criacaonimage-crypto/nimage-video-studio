@@ -1,4 +1,4 @@
-"""Informações de vídeo (ffprobe) e miniaturas (ffmpeg). Nunca altera o arquivo original."""
+"""Informações de vídeo (PyAV) e miniaturas (ffmpeg). Nunca altera o arquivo original."""
 from __future__ import annotations
 
 import hashlib
@@ -20,10 +20,61 @@ def eh_video(caminho: str | Path) -> bool:
 
 
 def probe(caminho: str | Path) -> dict:
-    ffprobe = config.ffprobe_path()
-    if not ffprobe:
-        raise MediaError("ffprobe não encontrado. Verifique a instalação do FFmpeg em Configurações.")
+    """Lê duração, resolução, fps, codecs e áudio. Usa a biblioteca PyAV (sem ffprobe.exe)."""
     caminho = str(caminho)
+    try:
+        return _probe_av(caminho)
+    except MediaError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        if config.ffprobe_path():
+            return _probe_ffprobe(caminho)
+        raise MediaError(f"Não foi possível ler o arquivo: {e}") from e
+
+
+def _probe_av(caminho: str) -> dict:
+    import av
+    try:
+        c = av.open(caminho)
+    except av.error.FFmpegError as e:
+        raise MediaError(f"Não foi possível ler o arquivo: {e}") from e
+    try:
+        videos = [s for s in c.streams.video if not (int(s.disposition or 0) & 0x400)]  # ignora capa/thumbnail
+        if not videos:
+            raise MediaError("O arquivo não contém trilha de vídeo.")
+        vs = videos[0]
+        audio = c.streams.audio[0] if c.streams.audio else None
+        largura, altura = int(vs.width or 0), int(vs.height or 0)
+        rot = 0
+        try:
+            quadro = next(c.decode(vs))
+            rot = int(getattr(quadro, "rotation", 0) or 0)
+        except (StopIteration, av.error.FFmpegError):
+            pass
+        if abs(rot) % 180 == 90:  # vídeo de celular gravado em pé
+            largura, altura = altura, largura
+        fps = float(vs.average_rate) if vs.average_rate else 0.0
+        duracao = c.duration / 1_000_000 if c.duration else (
+            float(vs.duration * vs.time_base) if vs.duration and vs.time_base else 0.0)
+        return {
+            "caminho": caminho,
+            "nome": os.path.basename(caminho),
+            "duracao": float(duracao),
+            "largura": largura,
+            "altura": altura,
+            "fps": round(fps, 3),
+            "codec_video": vs.codec_context.name if vs.codec_context else "",
+            "codec_audio": audio.codec_context.name if audio and audio.codec_context else "",
+            "tem_audio": audio is not None,
+            "formato": Path(caminho).suffix.lstrip(".").upper(),
+            "tamanho_bytes": os.path.getsize(caminho),
+        }
+    finally:
+        c.close()
+
+
+def _probe_ffprobe(caminho: str) -> dict:
+    ffprobe = config.ffprobe_path()
     r = config.run([ffprobe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", caminho], timeout=60)
     if r.returncode != 0:
         raise MediaError(f"Não foi possível ler o arquivo: {r.stderr.strip()[:300]}")
