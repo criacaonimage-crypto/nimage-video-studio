@@ -14,6 +14,10 @@ from typing import Callable
 
 from . import config
 
+# O acelerador de download "hf_xet" (sem assinatura digital) é barrado pelo Controle de Aplicativo
+# Inteligente do Windows. Desligado, o modelo de transcrição é baixado pelo método HTTP comum.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 ANALISE_VERSAO = 1
 Progresso = Callable[[str, float], None]   # (mensagem, fração 0..1 da etapa)
 
