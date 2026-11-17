@@ -355,4 +355,19 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
         self.previa.player.stop()
+        self._encerrar_tarefas()
         e.accept()
+
+    def _encerrar_tarefas(self):
+        """Espera as tarefas em segundo plano terminarem (fechar com tarefa rodando derruba o programa)."""
+        from PySide6.QtCore import QThreadPool
+        for nome in ("_worker", "_rworker", "_aworker"):
+            t = getattr(self, nome, None)
+            if t is not None and t.isRunning():
+                if hasattr(t, "cancelar"):
+                    t.cancelar()
+                t.wait(15000)
+        for t in (self._hw, getattr(self.config, "_pull", None), getattr(self.config, "_cuda_w", None)):
+            if t is not None and t.isRunning():
+                t.wait(15000)
+        QThreadPool.globalInstance().waitForDone(15000)

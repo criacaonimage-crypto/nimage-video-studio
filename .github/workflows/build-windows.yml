@@ -37,7 +37,9 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           $env:PATH = "$PWD\ffmpeg\bin;$env:PATH"
-          python -m pytest -q
+          python -m pytest -q -p no:cacheprovider
+          Write-Host "Código de saída do pytest: $LASTEXITCODE"
+          exit $LASTEXITCODE
 
       - name: Gerar executável
         run: pyinstaller NimageVideoStudio.spec --noconfirm
