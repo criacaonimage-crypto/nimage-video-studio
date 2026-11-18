@@ -1,0 +1,4 @@
+# Só para testes e geração no GitHub (não vai para o programa)
+pytest
+pyinstaller
+imageio-ffmpeg==0.8.1  # cria vídeos de teste

@@ -124,14 +124,29 @@ def test_render_formato_livre_e_sem_extras(dados, midia, tmp_path):
     assert abs(info["duracao"] - sum(c["duracao"] for c in pl["clipes"])) < 0.3
 
 
-def test_cache_de_trechos(dados, midia, tmp_path):
+def test_sem_executaveis_externos(dados, midia, tmp_path, monkeypatch):
+    """A edição inteira roda sem ffmpeg.exe/ffprobe.exe (o Windows da Nimage bloqueia executáveis sem assinatura)."""
+    import subprocess as sp
+    chamadas = []
+    original = sp.Popen
+
+    def espiao(cmd, *a, **k):
+        chamadas.append(cmd)
+        return original(cmd, *a, **k)
+    monkeypatch.setattr(sp, "Popen", espiao)
     pl = _plano(midia)
-    renderer.renderizar(pl, str(tmp_path / "a.mp4"), {"qualidade": "Rascunho rápido"})
-    antes = {p.name for p in (config.data_dir() / "render_cache").glob("t_*.mp4")}
-    pl["clipes"][0]["fim"] -= 0.5; pl["clipes"][0]["duracao"] -= 0.5   # muda só o 1º trecho
-    renderer.renderizar(pl, str(tmp_path / "b.mp4"), {"qualidade": "Rascunho rápido"})
-    depois = {p.name for p in (config.data_dir() / "render_cache").glob("t_*.mp4")}
-    assert len(depois - antes) == 1   # só um intermediário novo
+    renderer.renderizar(pl, str(tmp_path / "x.mp4"), {"qualidade": "Rascunho rápido"})
+    assert not [c for c in chamadas if "ffmpeg" in str(c).lower() or "ffprobe" in str(c).lower()]
+
+
+def test_quadros_no_tempo_certo(midia):
+    """O trecho começa no quadro certo do original (comparado ao 1º quadro decodificado no mesmo instante)."""
+    import numpy as np
+    from nimage_studio import avtools
+    ref = avtools.quadro_em(str(midia["v"]), 6.0)
+    primeiro = next(avtools.quadros(str(midia["v"]), 6.0, 1.0, 30))
+    assert float(np.abs(ref.astype(int) - primeiro.astype(int)).mean()) < 3
+    assert len(list(avtools.quadros(str(midia["v"]), 2.0, 1.5, 30))) == 45
 
 
 def test_video_original_ausente(dados, midia, tmp_path):
@@ -146,21 +161,28 @@ def test_cancelar(dados, midia, tmp_path):
         renderer.renderizar(_plano(midia), str(tmp_path / "c.mp4"), cancelado=lambda: True)
 
 
-def test_legendas_ass(midia, dados):
+def test_legendas_eventos_e_desenho(midia, dados):
+    import numpy as np
+    from nimage_studio import textdraw
     pl = _plano(midia)
-    ass = renderer.gerar_ass([(2.6, pl["clipes"][0])], pl["legendas"], 1080, 1920, "Arial")
-    linhas = [x for x in ass.splitlines() if x.startswith("Dialogue")]
-    assert linhas and "DISCIPLINA" in ass and "&H00FF0088" in ass   # destaque roxo #8800FF em caixa alta
-    assert linhas[0].split(",")[1] >= "0:00:02.60"[:7]
-    simples = renderer.gerar_ass([(0, pl["clipes"][0])], {**pl["legendas"], "estilo": "Simples"}, 1080, 1920, "Arial")
-    assert "disciplina" in simples and "\\c" not in simples.split("[Events]")[1]
+    ev = renderer.eventos_legenda([(2.6, pl["clipes"][0])], pl["legendas"])
+    assert ev and ev[0]["a"] >= 2.6
+    todas = [p for e in ev for p in e["palavras"]]
+    assert ("DISCIPLINA", True) in todas                       # destaque em caixa alta
+    simples = renderer.eventos_legenda([(0, pl["clipes"][0])], {**pl["legendas"], "estilo": "Simples"})
+    assert not any(d for e in simples for _, d in e["palavras"])
+    textdraw.garantir_qt()
+    fam, _ = textdraw.familia("")
+    x, y, bgra = textdraw.legenda(todas[:3], 1080, 1920, fam, 56, "#FFFFFF", "#8800FF", 3, "baixo", 576)
+    assert bgra.shape[2] == 4 and bgra[..., 3].max() == 255 and y + bgra.shape[0] <= 1920 - 576 + 1
+    roxo = (bgra[..., 0] > 200) & (bgra[..., 1] < 60) & (bgra[..., 2] > 100) & (bgra[..., 3] > 200)
+    assert roxo.sum() > 50                                     # palavra destacada desenhada em #8800FF
 
 
 def test_rosto_e_enquadramento():
-    f = renderer._filtro_enquadrar(1920, 1080, 1080, 1920, 1.0, (0.8, 0.4))
-    assert f.startswith("crop=608:1080:") and int(f.split(":")[2]) > 900   # recorte deslocado para o rosto
-    f2 = renderer._filtro_enquadrar(1920, 1080, 1920, 1080, 1.1, None)
-    assert f2.startswith("crop=1744:982")
+    x, y, cw, ch = renderer.caixa_enquadrar(1920, 1080, 1080, 1920, 1.0, (0.8, 0.4))
+    assert (cw, ch) == (608, 1080) and x > 900                # recorte deslocado para o rosto
+    assert renderer.caixa_enquadrar(1920, 1080, 1920, 1080, 1.1, None)[2:] == (1744, 982)
 
 
 def test_fontes():

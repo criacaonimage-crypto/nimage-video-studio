@@ -62,8 +62,7 @@ class HomePage(QWidget):
     def mostrar_hardware(self, hw: dict):
         g = hw["gpu"]
         gpu = f"{g['nome']} ({g['vram_mb'] // 1024} GB)" if g else "nenhuma GPU NVIDIA detectada"
-        ff = "FFmpeg OK" if config.ffmpeg_path() else "FFmpeg NÃO encontrado"
-        self.hw.setText(f"Computador: {gpu} · perfil {hw['perfil']} · {ff}"
+        self.hw.setText(f"Computador: {gpu} · perfil {hw['perfil']}"
                         + (" · aceleração NVENC disponível" if hw["nvenc"] else ""))
 
     def recarregar(self):
@@ -180,7 +179,7 @@ class SettingsPage(QWidget):
         f1.addRow(label("Computador e ferramentas", "H2"))
         self.l_ffmpeg = label("", wrap=True)
         self.l_gpu = label("Verificando…", wrap=True)
-        f1.addRow("FFmpeg", self.l_ffmpeg)
+        f1.addRow("Motor de vídeo", self.l_ffmpeg)
         f1.addRow("Placa de vídeo", self.l_gpu)
         lay.addWidget(c1)
 
@@ -268,9 +267,13 @@ class SettingsPage(QWidget):
         self.atualizar_ferramentas()
 
     def atualizar_ferramentas(self):
-        ff = config.ffmpeg_path()
-        self.l_ffmpeg.setText(ff if ff else "NÃO encontrado — reinstale o programa ou instale o FFmpeg.")
-        self.l_ffmpeg.setStyleSheet("" if ff else "color:#E5484D;")
+        try:
+            import av
+            self.l_ffmpeg.setText(f"PyAV {av.__version__} (embutido no programa)")
+            self.l_ffmpeg.setStyleSheet("")
+        except Exception as e:  # noqa: BLE001
+            self.l_ffmpeg.setText(f"Biblioteca de vídeo indisponível: {e}")
+            self.l_ffmpeg.setStyleSheet("color:#E5484D;")
 
     def mostrar_hardware(self, hw: dict):
         g = hw["gpu"]

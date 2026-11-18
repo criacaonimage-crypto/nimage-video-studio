@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QSlider, QTabWidget,
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QSlider,
+                               QStackedWidget, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from .. import media
@@ -47,17 +49,21 @@ class PreviewPage(QWidget):
         self.video = QVideoWidget()
         self.video.setMinimumSize(480, 270)
         self.video.setStyleSheet("background:#000; border-radius:12px;")
-        centro.addWidget(self.video, 1)
+        self.tela_reserva = QLabel()
+        self.tela_reserva.setAlignment(Qt.AlignCenter)
+        self.tela_reserva.setMinimumSize(480, 270)
+        self.tela_reserva.setStyleSheet("background:#000; border-radius:12px;")
+        self.pilha_video = QStackedWidget()
+        self.pilha_video.addWidget(self.video)
+        self.pilha_video.addWidget(self.tela_reserva)
+        centro.addWidget(self.pilha_video, 1)
+        self.modo_reserva = False
 
-        self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
+        self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio)
         self.player.setVideoOutput(self.video)
-        self.player.positionChanged.connect(self._pos)
-        self.player.durationChanged.connect(self._dur)
-        self.player.playbackStateChanged.connect(self._estado)
-        self.player.mediaStatusChanged.connect(self._status_midia)
-        self.player.errorOccurred.connect(lambda *_: self.titulo.setText(f"Erro ao reproduzir: {self.player.errorString()}"))
+        self._ligar_player()
 
         ctrl = QHBoxLayout()
         self.btn_play = botao("▶  Reproduzir", "Primary", self.alternar)
@@ -76,6 +82,8 @@ class PreviewPage(QWidget):
         self.audio.setVolume(0.8)
         ctrl.addWidget(self.vol)
         centro.addLayout(ctrl)
+        if os.environ.get("NIMAGE_PLAYER") == "reserva":
+            self._usar_reserva()
 
         # resultado editado
         self.res_status = label("Nenhum vídeo gerado ainda.", "Muted", wrap=True)
@@ -115,6 +123,38 @@ class PreviewPage(QWidget):
         self.abas.addTab(self.transcricao, "Transcrição")
         raiz.addWidget(self.abas, 2)
         self.mostrar_plano(None)
+
+    # ---------- player ----------
+    def _ligar_player(self):
+        self.player.positionChanged.connect(self._pos)
+        self.player.durationChanged.connect(self._dur)
+        self.player.playbackStateChanged.connect(self._estado)
+        self.player.mediaStatusChanged.connect(self._status_midia)
+        self.player.errorOccurred.connect(self._erro_player)
+
+    def _erro_player(self, *_):
+        if not self.modo_reserva:
+            fonte = self.player.source()
+            self._usar_reserva()
+            if not fonte.isEmpty():
+                self.player.setSource(fonte)
+            return
+        self.titulo.setText(f"Erro ao reproduzir: {self.player.errorString()}")
+
+    def _usar_reserva(self):
+        """Troca para o reprodutor de reserva (PyAV, sem som) quando o do Qt não funciona neste PC."""
+        from .fallback_player import PlayerReserva
+        try:
+            self.player.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        self.modo_reserva = True
+        self.player = PlayerReserva(self.tela_reserva, self)
+        self._ligar_player()
+        self.pilha_video.setCurrentIndex(1)
+        self.vol.setEnabled(False)
+        self.vol.setToolTip("Prévia em modo de compatibilidade (sem som). O vídeo exportado tem som normalmente.")
+        self.titulo.setText("Prévia em modo de compatibilidade (sem som) — o vídeo final tem som normalmente.")
 
     # ---------- aba do plano ----------
     def _aba_plano(self) -> QWidget:

@@ -77,14 +77,12 @@ def _cache_path(chave: str) -> Path:
 
 # ------------------------------------------------------------------ áudio
 def extrair_audio(caminho: str, destino: Path) -> Path:
-    ff = config.ffmpeg_path()
-    if not ff:
-        raise AnaliseErro("FFmpeg não encontrado.")
-    r = config.run([ff, "-y", "-v", "error", "-i", caminho, "-vn", "-ac", "1", "-ar", "16000",
-                    "-c:a", "pcm_s16le", str(destino)], timeout=3600)
-    if r.returncode != 0 or not destino.exists():
-        raise AnaliseErro(f"Falha ao extrair o áudio: {r.stderr.strip()[:300]}")
-    return destino
+    """WAV 16 kHz mono para a transcrição (via PyAV, sem ffmpeg.exe)."""
+    from . import avtools
+    try:
+        return avtools.extrair_wav(caminho, destino)
+    except Exception as e:  # noqa: BLE001
+        raise AnaliseErro(f"Falha ao extrair o áudio: {e}") from e
 
 
 # ------------------------------------------------------------------ transcrição
@@ -209,7 +207,10 @@ def detectar_cenas(caminho: str, duracao: float, progresso: Progresso) -> list[d
     except ImportError as e:
         raise AnaliseErro("PySceneDetect não está instalado.") from e
     progresso("Identificando cenas…", 0.0)
-    video = open_video(caminho)
+    try:
+        video = open_video(caminho, backend="pyav")   # PyAV: mesma biblioteca já aceita pelo Windows
+    except Exception:  # noqa: BLE001
+        video = open_video(caminho)
     sm = SceneManager()
     sm.auto_downscale = True
     sm.add_detector(ContentDetector(threshold=27.0, min_scene_len=15))

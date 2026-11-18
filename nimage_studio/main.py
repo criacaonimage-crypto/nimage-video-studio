@@ -32,44 +32,58 @@ def _log_excecoes():
 
 
 def autoteste() -> int:
-    """`NimageVideoStudio --autoteste`: confere se as bibliotecas de análise estão dentro do executável."""
-    import faster_whisper  # noqa: F401
-    import ctranslate2
-    import scenedetect
-    from .analysis import cuda_disponivel_para_whisper
-    from importlib.resources import files
-    import cv2
-    vad = [p.name for p in files("faster_whisper").joinpath("assets").iterdir()]
-    rosto = hasattr(cv2, "CascadeClassifier") and not cv2.CascadeClassifier(str(config.resources_dir() / "haarcascade_frontalface_default.xml")).empty()
-    print(f"faster-whisper OK · ctranslate2 {ctranslate2.__version__} · scenedetect {scenedetect.__version__} · "
-          f"VAD {vad} · detector de rosto {rosto} · ffmpeg {config.ffmpeg_path()} · "
-          f"CUDA para transcrição: {cuda_disponivel_para_whisper()}")
-    if not (any(v.endswith(".onnx") for v in vad) and rosto and config.ffmpeg_path()):
-        return 1
-    # renderização real mínima: título, trecho com legenda e trilha (confere libass, drawtext, xfade no FFmpeg)
+    """`--autoteste`: confere as bibliotecas e faz uma edição mínima de verdade (sem executáveis externos)."""
     import tempfile
+    from importlib.resources import files
     from pathlib import Path
-    from . import renderer
+
+    import numpy as np
+    import av
+    import cv2
+    import ctranslate2
+    import faster_whisper  # noqa: F401
+    import scenedetect
+
+    from . import avtools, media, renderer
+    from .analysis import cuda_disponivel_para_whisper, detectar_cenas, extrair_audio
+    vad = [p.name for p in files("faster_whisper").joinpath("assets").iterdir()]
+    rosto = hasattr(cv2, "CascadeClassifier") and not cv2.CascadeClassifier(
+        str(config.resources_dir() / "haarcascade_frontalface_default.xml")).empty()
+    print(f"faster-whisper OK · ctranslate2 {ctranslate2.__version__} · scenedetect {scenedetect.__version__} · "
+          f"PyAV {av.__version__} · VAD {vad} · detector de rosto {rosto} · "
+          f"NVENC {avtools.encoder_funciona('h264_nvenc')} · CUDA para transcrição: {cuda_disponivel_para_whisper()}",
+          flush=True)
+    if not (any(v.endswith(".onnx") for v in vad) and rosto):
+        return 1
     with tempfile.TemporaryDirectory() as d:
-        v, m, out = Path(d) / "v.mp4", Path(d) / "m.wav", Path(d) / "saida.mp4"
-        ff = config.ffmpeg_path()
-        config.run([ff, "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=25:d=4", "-f", "lavfi",
-                    "-i", "sine=d=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(v)])
-        config.run([ff, "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=500:d=5", str(m)])
+        v, out = Path(d) / "v.mp4", Path(d) / "saida.mp4"
+        t = np.arange(int(4 * avtools.SR)) / avtools.SR
+        tom = (0.2 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        g = avtools.Gravador(str(v), 640, 360, 25, np.stack([tom, tom], axis=1), "Rascunho rápido")
+        for k in range(100):
+            img = np.zeros((360, 640, 3), np.uint8)
+            img[:, : (k * 6) % 640] = (40, 120, 220)
+            g.quadro(img)
+        g.fechar()
+        info = media.probe(v)
+        extrair_audio(str(v), Path(d) / "a.wav")
+        detectar_cenas(str(v), info["duracao"], lambda m, f: None)
+        media.miniatura(v, info["duracao"])
         palavras = [{"p": w, "i": 0.3 + k * 0.5, "f": 0.75 + k * 0.5} for k, w in enumerate("teste de legenda ok".split())]
         clipe = {"id": "T1", "video": str(v), "video_nome": "v.mp4", "inicio": 0.0, "fim": 3.0, "duracao": 3.0,
                  "texto": "teste de legenda ok", "palavras": palavras, "destaques": ["legenda"], "zoom": 1.0}
         plano = {"formato": {"largura": 540, "altura": 960}, "clipes": [clipe, {**clipe, "id": "T2", "zoom": 1.1}],
                  "transicao": "Suaves", "abertura": {"tipo": "Título", "texto": "Autoteste"},
                  "encerramento": {"tipo": "Chamada para ação", "texto": "ok"},
-                 "trilha": {"usar": True, "arquivo": str(m), "volume": 20, "abaixar_na_fala": True},
+                 "trilha": {"usar": True, "arquivo": str(v), "volume": 20, "abaixar_na_fala": True},
                  "legendas": {"ativar": True, "estilo": "Palavra-chave em destaque", "posicao": "Abaixo do queixo",
                               "tamanho": 54, "cor": "#FFFFFF", "cor_destaque": "#8800FF", "caixa_alta_destaque": True,
                               "fonte": ""},
                  "identidade": {"cores": {"fundo": "#10001E", "texto": "#FFFFFF", "principal": "#8800FF"},
                                 "fonte_titulo": "", "tamanho_titulo": 72}}
         info = renderer.renderizar(plano, str(out), {"qualidade": "Rascunho rápido"})
-        print(f"Renderização OK: {info['duracao']:.1f} s, {info['largura']}x{info['altura']}, {info['codificador']}")
+        print(f"Renderização OK: {info['duracao']:.1f} s, {info['largura']}x{info['altura']}, {info['codificador']}",
+              flush=True)
     return 0
 
 

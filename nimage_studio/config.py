@@ -128,12 +128,11 @@ def detect_gpu() -> dict:
 
 
 def ffmpeg_has_nvenc() -> bool:
-    ff = ffmpeg_path()
-    if not ff:
-        return False
+    """O vídeo é gravado pela biblioteca PyAV; testa se o codificador da NVIDIA funciona nela."""
     try:
-        return "h264_nvenc" in run([ff, "-hide_banner", "-encoders"], timeout=15).stdout
-    except Exception:
+        from .avtools import encoder_funciona
+        return encoder_funciona("h264_nvenc")
+    except Exception:  # noqa: BLE001
         return False
 
 

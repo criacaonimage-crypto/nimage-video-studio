@@ -120,10 +120,8 @@ def _probe_ffprobe(caminho: str) -> dict:
 
 
 def miniatura(caminho: str | Path, duracao: float | None = None, largura: int = 480) -> str:
-    """Gera (ou reaproveita do cache) uma miniatura PNG e retorna o caminho."""
-    ffmpeg = config.ffmpeg_path()
-    if not ffmpeg:
-        raise MediaError("ffmpeg não encontrado.")
+    """Gera (ou reaproveita do cache) uma miniatura JPG e retorna o caminho."""
+    from . import avtools
     p = Path(caminho)
     chave = hashlib.sha1(f"{p.resolve()}|{p.stat().st_mtime}|{largura}".encode()).hexdigest()[:20]
     destino = config.cache_dir() / "miniaturas" / f"{chave}.jpg"
@@ -131,14 +129,10 @@ def miniatura(caminho: str | Path, duracao: float | None = None, largura: int = 
         return str(destino)
     destino.parent.mkdir(parents=True, exist_ok=True)
     t = max(0.0, min((duracao or 0) * 0.1, 5.0))
-    r = config.run([ffmpeg, "-y", "-v", "error", "-ss", f"{t:.2f}", "-i", str(p), "-frames:v", "1",
-                    "-vf", f"scale={largura}:-2", "-q:v", "3", str(destino)], timeout=60)
-    if r.returncode != 0 or not destino.exists():
-        # Alguns arquivos falham com -ss antes do -i; tenta o primeiro quadro.
-        r = config.run([ffmpeg, "-y", "-v", "error", "-i", str(p), "-frames:v", "1",
-                        "-vf", f"scale={largura}:-2", str(destino)], timeout=60)
-        if r.returncode != 0 or not destino.exists():
-            raise MediaError(f"Não foi possível gerar miniatura: {r.stderr.strip()[:200]}")
+    try:
+        avtools.miniatura(str(p), t, destino, largura)
+    except Exception as e:  # noqa: BLE001
+        raise MediaError(f"Não foi possível gerar miniatura: {e}") from e
     return str(destino)
 
 

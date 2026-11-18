@@ -1,12 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Gera a versão Windows:  pyinstaller NimageVideoStudio.spec --noconfirm
-# O FFmpeg vem do pacote imageio-ffmpeg (incluído via collect_all).
+# Sem executáveis externos: vídeo pela biblioteca PyAV (incluída via collect_all).
 
 from PyInstaller.utils.hooks import collect_all
 
 datas = [("nimage_studio/resources", "nimage_studio/resources")]
 binaries, hiddenimports = [], []
-for pacote in ("faster_whisper", "ctranslate2", "onnxruntime", "scenedetect", "tokenizers", "imageio_ffmpeg", "av"):
+for pacote in ("faster_whisper", "ctranslate2", "onnxruntime", "scenedetect", "tokenizers", "av"):
     d, b, h = collect_all(pacote)
     datas += d; binaries += b; hiddenimports += h
 

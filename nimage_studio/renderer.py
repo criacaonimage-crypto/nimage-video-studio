@@ -1,35 +1,28 @@
-"""ETAPA 5 — Execução: transforma o plano aprovado em um MP4 real usando o FFmpeg.
+"""ETAPA 5 — Execução: transforma o plano aprovado em um MP4 real, sem nenhum executável externo.
 
-Etapas:
-1. Cada trecho vira um arquivo intermediário já no formato final (corte, enquadramento no rosto, zoom,
-   30 fps, áudio 48 kHz). Intermediários ficam em cache: num ajuste, só o que mudou é refeito.
-2. Abertura/encerramento: vinheta da biblioteca, cartão de título, logo ou chamada para ação.
-3. Uma passada final junta tudo com as transições, queima as legendas no estilo do padrão,
-   mistura a trilha (abaixando na fala) e os efeitos sonoros, normaliza o volume e grava o MP4.
+Tudo roda dentro do Python (aceito pelo Controle de Aplicativo Inteligente do Windows):
+- PyAV (FFmpeg em forma de biblioteca) lê os vídeos/áudios e grava o MP4 (H.264 pela placa NVIDIA
+  quando disponível, senão x264) com áudio AAC;
+- OpenCV/numpy fazem recorte, enquadramento no rosto, zoom, transições e a mistura do áudio;
+- o Qt desenha legendas, títulos, logo e chamada para ação com as fontes e cores do padrão.
 """
 from __future__ import annotations
 
-import hashlib
-import json
-import os
-import shutil
-import subprocess
-import tempfile
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable
 
-from . import config, fonts, media
+import numpy as np
+
+from . import avtools, config, media, textdraw
 
 FPS = 30
+SR = avtools.SR
 Progresso = Callable[[str, float], None]
-QUALIDADES = {  # nome: (crf x264, cq nvenc, preset x264)
-    "Alta": (18, 19, "medium"),
-    "Padrão": (21, 23, "fast"),
-    "Rascunho rápido": (27, 30, "ultrafast"),
-}
-TRANSICAO_XFADE = {"Suaves": ("fade", 0.45), "Dinâmicas": ("smoothleft", 0.30)}
-_nvenc_ok: bool | None = None
+QUALIDADES = {"Alta": "Alta", "Padrão": "Padrão", "Rascunho rápido": "Rascunho rápido"}
+TRANSICAO_XFADE = {"Suaves": ("fade", 0.45), "Dinâmicas": ("empurrar", 0.30)}
+DUR_CARTAO = 2.6
 
 
 class RenderErro(Exception):
@@ -40,27 +33,22 @@ class RenderCancelado(Exception):
     pass
 
 
-# ------------------------------------------------------------------ utilidades
 def nvenc_funciona() -> bool:
-    """O FFmpeg pode listar o NVENC mesmo sem placa NVIDIA; testa de verdade uma vez."""
-    global _nvenc_ok
-    if _nvenc_ok is None:
-        ff = config.ffmpeg_path()
-        _nvenc_ok = False
-        if ff and config.ffmpeg_has_nvenc():
-            r = config.run([ff, "-v", "error", "-f", "lavfi", "-i", "color=s=256x256:d=0.2", "-c:v", "h264_nvenc",
-                            "-f", "null", "-"], timeout=30)
-            _nvenc_ok = r.returncode == 0
-    return _nvenc_ok
+    return avtools.encoder_funciona("h264_nvenc")
 
 
-def _codec_video(qualidade: str, intermediario: bool = False) -> list[str]:
-    crf, cq, preset = QUALIDADES.get(qualidade, QUALIDADES["Padrão"])
-    if intermediario:
-        crf, cq, preset = 15, 16, "veryfast"
-    if nvenc_funciona():
-        return ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", str(cq), "-b:v", "0", "-pix_fmt", "yuv420p"]
-    return ["-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p"]
+def limpar_cache(dias: int = 14) -> None:
+    """Apaga sobras da versão antiga (intermediários gravados em disco)."""
+    pasta = config.data_dir() / "render_cache"
+    if not pasta.is_dir():
+        return
+    limite = time.time() - dias * 86400
+    for f in pasta.glob("*.mp4"):
+        try:
+            if f.stat().st_mtime < limite:
+                f.unlink()
+        except OSError:
+            pass
 
 
 def _par(n: float) -> int:
@@ -68,66 +56,11 @@ def _par(n: float) -> int:
     return max(2, n - (n % 2))
 
 
-def _ass_cor(hex_cor: str, alpha: str = "00") -> str:
-    h = (hex_cor or "#FFFFFF").lstrip("#")
+def _bgr(hexcor: str) -> tuple[int, int, int]:
+    h = (hexcor or "#000000").lstrip("#")
     if len(h) != 6:
-        h = "FFFFFF"
-    return f"&H{alpha}{h[4:6]}{h[2:4]}{h[0:2]}".upper()
-
-
-def _ffmpeg(args: list[str], duracao: float, progresso: Callable[[float], None], cancelado: Callable[[], bool],
-            cwd: str | None = None) -> None:
-    ff = config.ffmpeg_path()
-    if not ff:
-        raise RenderErro("FFmpeg não encontrado.")
-    with tempfile.TemporaryFile() as err:
-        try:
-            proc = subprocess.Popen([ff, "-y", "-hide_banner", "-nostats", "-progress", "pipe:1", *args],
-                                    stdout=subprocess.PIPE, stderr=err, stdin=subprocess.DEVNULL, cwd=cwd,
-                                    creationflags=config.CREATE_NO_WINDOW, text=True, encoding="utf-8",
-                                    errors="replace")
-        except OSError as e:
-            if getattr(e, "winerror", None) == config.BLOQUEIO_WINDOWS:
-                raise RenderErro(config.mensagem_bloqueio(ff)) from e
-            raise
-        try:
-            for linha in proc.stdout:
-                if cancelado():
-                    proc.kill()
-                    proc.wait()   # no Windows o arquivo só é liberado depois que o processo fecha
-                    raise RenderCancelado()
-                if linha.startswith("out_time_us=") or linha.startswith("out_time_ms="):
-                    try:
-                        t = int(linha.split("=", 1)[1]) / 1e6
-                        if duracao > 0:
-                            progresso(min(t / duracao, 1.0))
-                    except ValueError:
-                        pass
-            proc.wait()
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
-        if proc.returncode != 0:
-            err.seek(0)
-            msg = err.read().decode("utf-8", "replace").strip().splitlines()
-            raise RenderErro("O FFmpeg falhou: " + " | ".join(msg[-6:])[:900])
-
-
-def _cache_dir() -> Path:
-    d = config.data_dir() / "render_cache"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def limpar_cache(dias: int = 14) -> None:
-    limite = time.time() - dias * 86400
-    for f in _cache_dir().glob("*.mp4"):
-        try:
-            if f.stat().st_atime < limite:
-                f.unlink()
-        except OSError:
-            pass
+        h = "000000"
+    return int(h[4:6], 16), int(h[2:4], 16), int(h[0:2], 16)
 
 
 # ------------------------------------------------------------------ enquadramento no rosto
@@ -137,40 +70,38 @@ def centro_do_rosto(video: str, ini: float, fim: float) -> tuple[float, float] |
         import cv2
     except ImportError:
         return None
-    if not hasattr(cv2, "CascadeClassifier"):   # OpenCV sem o módulo de detecção → enquadra no centro
+    if not hasattr(cv2, "CascadeClassifier"):
         return None
-    cascata = config.resources_dir() / "haarcascade_frontalface_default.xml"   # vem com o programa
-    det = cv2.CascadeClassifier(str(cascata))
+    det = cv2.CascadeClassifier(str(config.resources_dir() / "haarcascade_frontalface_default.xml"))
     if det.empty():
         return None
-    cap = cv2.VideoCapture(video)
     pontos = []
-    try:
-        for k in range(5):
-            t = ini + (fim - ini) * (k + 0.5) / 5
-            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
-            ok, img = cap.read()
-            if not ok:
-                continue
-            h, w = img.shape[:2]
-            esc = 480 / max(w, h)
-            peq = cv2.resize(img, (int(w * esc), int(h * esc))) if esc < 1 else img
-            cinza = cv2.cvtColor(peq, cv2.COLOR_BGR2GRAY)
-            rostos = det.detectMultiScale(cinza, scaleFactor=1.15, minNeighbors=6, minSize=(24, 24))
-            if len(rostos):
-                x, y, rw, rh = max(rostos, key=lambda r: r[2] * r[3])
-                ph, pw = cinza.shape[:2]
-                pontos.append(((x + rw / 2) / pw, (y + rh / 2) / ph))
-    finally:
-        cap.release()
+    for k in range(5):
+        t = ini + (fim - ini) * (k + 0.5) / 5
+        try:
+            img = avtools.quadro_em(video, t)
+        except avtools.AVErro:
+            img = None
+        if img is None:
+            continue
+        h, w = img.shape[:2]
+        esc = 480 / max(w, h)
+        peq = cv2.resize(img, (int(w * esc), int(h * esc))) if esc < 1 else img
+        cinza = cv2.cvtColor(peq, cv2.COLOR_BGR2GRAY)
+        rostos = det.detectMultiScale(cinza, scaleFactor=1.15, minNeighbors=6, minSize=(24, 24))
+        if len(rostos):
+            x, y, rw, rh = max(rostos, key=lambda r: r[2] * r[3])
+            ph, pw = cinza.shape[:2]
+            pontos.append(((x + rw / 2) / pw, (y + rh / 2) / ph))
     if not pontos:
         return None
     xs, ys = sorted(p[0] for p in pontos), sorted(p[1] for p in pontos)
     return xs[len(xs) // 2], ys[len(ys) // 2]
 
 
-def _filtro_enquadrar(w0: int, h0: int, W: int, H: int, zoom: float, centro: tuple[float, float] | None) -> str:
-    """Recorta para a proporção final (centrado no rosto, se houver), aplica zoom e redimensiona."""
+def caixa_enquadrar(w0: int, h0: int, W: int, H: int, zoom: float,
+                    centro: tuple[float, float] | None) -> tuple[int, int, int, int]:
+    """Recorte (x, y, largura, altura) na proporção final, centrado no rosto se houver, com zoom."""
     ar = W / H
     if w0 / h0 > ar:
         cw, ch = h0 * ar, h0
@@ -182,99 +113,93 @@ def _filtro_enquadrar(w0: int, h0: int, W: int, H: int, zoom: float, centro: tup
         cy = cy + 0.08  # rosto um pouco acima do centro do quadro
     x = min(max(cx * w0 - cw / 2, 0), w0 - cw)
     y = min(max(cy * h0 - ch / 2, 0), h0 - ch)
-    cw, ch = _par(cw), _par(ch)
+    cw, ch = min(_par(cw), w0 - (w0 % 2)), min(_par(ch), h0 - (h0 % 2))
     x, y = int(min(x, w0 - cw)), int(min(y, h0 - ch))
-    return f"crop={cw}:{ch}:{max(x, 0)}:{max(y, 0)},scale={W}:{H}:flags=lanczos,setsar=1"
+    return max(x, 0), max(y, 0), cw, ch
 
 
-def _filtro_encaixar(W: int, H: int, fundo: str) -> str:
-    return (f"scale={W}:{H}:force_original_aspect_ratio=decrease:flags=lanczos,"
-            f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color={fundo},setsar=1")
+def _encaixar(img: np.ndarray, W: int, H: int, fundo: tuple[int, int, int]) -> np.ndarray:
+    import cv2
+    h, w = img.shape[:2]
+    esc = min(W / w, H / h)
+    nw, nh = max(2, int(w * esc)), max(2, int(h * esc))
+    out = np.empty((H, W, 3), np.uint8)
+    out[:] = fundo
+    x, y = (W - nw) // 2, (H - nh) // 2
+    out[y:y + nh, x:x + nw] = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+    return out
 
 
-# ------------------------------------------------------------------ segmentos
-def _seg_trecho(c: dict, W: int, H: int, enquadramento: str, cancelado) -> Path:
+# ------------------------------------------------------------------ segmentos (vídeo + áudio)
+class Segmento:
+    def __init__(self, tipo: str, duracao: float, audio: np.ndarray, gerar, clipe: dict | None = None):
+        self.tipo, self.duracao, self.audio, self._gerar, self.clipe = tipo, duracao, audio, gerar, clipe
+        self.n = max(1, int(round(duracao * FPS)))
+
+    def quadros(self):
+        return self._gerar()
+
+
+def _fade_bordas(a: np.ndarray, seg: float = 0.03) -> np.ndarray:
+    n = min(len(a) // 2, int(seg * SR))
+    if n > 0:
+        r = np.linspace(0, 1, n, dtype=np.float32)[:, None]
+        a[:n] *= r
+        a[-n:] *= r[::-1]
+    return a
+
+
+def _seg_trecho(c: dict, W: int, H: int, enquadramento: str) -> Segmento:
+    import cv2
     info = media.probe(c["video"])
     dur = max(0.2, c["fim"] - c["inicio"])
-    chave = hashlib.sha1(json.dumps([c["video"], os.path.getmtime(c["video"]), c["inicio"], c["fim"], W, H,
-                                     c.get("zoom", 1.0), enquadramento, nvenc_funciona(), 3]).encode()).hexdigest()[:24]
-    destino = _cache_dir() / f"t_{chave}.mp4"
-    if destino.exists():
-        return destino
-    precisa_recorte = abs(info["largura"] / max(info["altura"], 1) - W / H) > 0.02 or c.get("zoom", 1.0) != 1.0
-    centro = centro_do_rosto(c["video"], c["inicio"], c["fim"]) if (precisa_recorte and enquadramento == "rosto") else None
-    vf = _filtro_enquadrar(info["largura"], info["altura"], W, H, c.get("zoom", 1.0), centro) + f",fps={FPS},format=yuv420p"
-    args = ["-ss", f"{c['inicio']:.3f}", "-t", f"{dur:.3f}", "-i", c["video"]]
-    if info["tem_audio"]:
-        af = (f"aresample=48000,aformat=channel_layouts=stereo,afade=t=in:d=0.03,"
-              f"afade=t=out:st={max(dur - 0.04, 0):.3f}:d=0.04,apad")
-        mapa = ["-map", "0:v:0", "-map", "0:a:0", "-af", af]
-    else:
-        args += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
-        mapa = ["-map", "0:v:0", "-map", "1:a:0"]
-    tmp = destino.with_suffix(".tmp.mp4")
-    _ffmpeg(args + ["-vf", vf, *mapa, "-t", f"{dur:.3f}", *_codec_video("", True), "-c:a", "aac", "-b:a", "192k",
-                    "-ar", "48000", str(tmp)], dur, lambda f: None, cancelado)
-    tmp.replace(destino)
-    return destino
+    zoom = float(c.get("zoom", 1.0) or 1.0)
+    precisa = abs(info["largura"] / max(info["altura"], 1) - W / H) > 0.02 or zoom != 1.0
+    centro = centro_do_rosto(c["video"], c["inicio"], c["fim"]) if (precisa and enquadramento == "rosto") else None
+    caixa = caixa_enquadrar(info["largura"], info["altura"], W, H, zoom, centro)
+    audio = _fade_bordas(avtools.ler_audio(c["video"], c["inicio"], dur) if info["tem_audio"]
+                         else np.zeros((int(round(dur * SR)), 2), np.float32))
+
+    def gerar():
+        x, y, cw, ch = caixa
+        for img in avtools.quadros(c["video"], c["inicio"], dur, FPS):
+            h0, w0 = img.shape[:2]
+            if (w0, h0) != (info["largura"], info["altura"]):   # segurança se a orientação divergir
+                x2, y2, cw2, ch2 = caixa_enquadrar(w0, h0, W, H, zoom, centro)
+                rec = img[y2:y2 + ch2, x2:x2 + cw2]
+            else:
+                rec = img[y:y + ch, x:x + cw]
+            yield cv2.resize(rec, (W, H), interpolation=cv2.INTER_AREA if cw >= W else cv2.INTER_LINEAR)
+
+    return Segmento("trecho", dur, audio, gerar, c)
 
 
-def _seg_vinheta(arquivo: str, W: int, H: int, fundo: str, cancelado) -> Path:
+def _seg_vinheta(arquivo: str, W: int, H: int, fundo: tuple[int, int, int]) -> Segmento:
     info = media.probe(arquivo)
-    chave = hashlib.sha1(json.dumps([arquivo, os.path.getmtime(arquivo), W, H, fundo, 2]).encode()).hexdigest()[:24]
-    destino = _cache_dir() / f"v_{chave}.mp4"
-    if destino.exists():
-        return destino
-    args = ["-i", arquivo]
-    if info["tem_audio"]:
-        mapa = ["-map", "0:v:0", "-map", "0:a:0", "-af", "aresample=48000,aformat=channel_layouts=stereo"]
-    else:
-        args += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
-        mapa = ["-map", "0:v:0", "-map", "1:a:0", "-shortest"]
-    tmp = destino.with_suffix(".tmp.mp4")
-    _ffmpeg(args + ["-vf", _filtro_encaixar(W, H, fundo) + f",fps={FPS},format=yuv420p", *mapa,
-                    "-t", f"{info['duracao']:.3f}", *_codec_video("", True), "-c:a", "aac", "-ar", "48000", str(tmp)],
-            info["duracao"], lambda f: None, cancelado)
-    tmp.replace(destino)
-    return destino
+    dur = info["duracao"]
+    audio = avtools.ler_audio(arquivo, 0.0, dur) if info["tem_audio"] else np.zeros((int(round(dur * SR)), 2), np.float32)
+
+    def gerar():
+        for img in avtools.quadros(arquivo, 0.0, dur, FPS):
+            yield _encaixar(img, W, H, fundo)
+
+    return Segmento("vinheta", dur, audio, gerar)
 
 
-def _seg_cartao(tipo: str, texto: str, logo: str | None, ident: dict, W: int, H: int, pasta: Path,
-                nome: str, cancelado, dur: float = 2.6) -> Path:
-    """Cartão de título, logo ou chamada para ação, nas cores e fontes do padrão."""
-    cores = ident.get("cores", {})
-    fundo = cores.get("fundo", "#000000")
-    base = min(W, H) / 1080
-    fonte, _ = fonts.arquivo_ou_padrao(ident.get("fonte_titulo", ""))
-    destino = pasta / f"{nome}.mp4"
-    entradas = ["-f", "lavfi", "-i", f"color=c={fundo}:s={W}x{H}:r={FPS}:d={dur}",
-                "-f", "lavfi", "-i", f"anullsrc=r=48000:cl=stereo"]
-    filtros = []
-    atual = "[0:v]"
-    if logo and Path(logo).exists():
-        entradas += ["-loop", "1", "-t", str(dur), "-i", logo]
-        lw = _par(W * 0.45)
-        filtros.append(f"[2:v]scale={lw}:-2,format=rgba[lg]")
-        oy = "(H-h)/2" if not texto else "(H-h)/2-H*0.08"
-        filtros.append(f"{atual}[lg]overlay=(W-w)/2:{oy}[v1]")
-        atual = "[v1]"
-    if texto and fonte:
-        shutil.copy(fonte, pasta / f"{nome}.ttf")
-        (pasta / f"{nome}.txt").write_text(texto, encoding="utf-8")
-        tam = int(ident.get("tamanho_titulo", 72) * base)
-        y = "(h-text_h)/2" if not logo else "h*0.62"
-        filtros.append(f"{atual}drawtext=fontfile={nome}.ttf:textfile={nome}.txt:fontsize={tam}:"
-                       f"fontcolor={cores.get('texto', '#FFFFFF')}:x=(w-text_w)/2:y={y}:line_spacing={int(tam * 0.2)}[v2]")
-        atual = "[v2]"
-        barra_y = f"(ih+{tam})/2+{int(tam * 0.4)}" if not logo else f"ih*0.62+{int(tam * 1.5)}"
-        filtros.append(f"{atual}drawbox=x=(iw-{_par(W * 0.18)})/2:y={barra_y}:w={_par(W * 0.18)}:h={max(4, int(8 * base))}:"
-                       f"color={cores.get('principal', '#FFFFFF')}:t=fill[v3]")
-        atual = "[v3]"
-    filtros.append(f"{atual}fade=t=in:d=0.35,fade=t=out:st={dur - 0.35:.2f}:d=0.35,format=yuv420p[vout]")
-    _ffmpeg([*entradas, "-filter_complex", ";".join(filtros), "-map", "[vout]", "-map", "1:a", "-t", str(dur),
-             *_codec_video("", True), "-c:a", "aac", "-ar", "48000", destino.name], dur, lambda f: None, cancelado,
-            cwd=str(pasta))
-    return destino
+def _seg_cartao(texto: str, logo: str | None, ident: dict, W: int, H: int) -> Segmento:
+    cores = ident.get("cores") or {}
+    base = textdraw.cartao(W, H, cores.get("fundo", "#000000"), texto, logo, cores.get("texto", "#FFFFFF"),
+                           cores.get("principal", "#FFFFFF"), ident.get("fonte_titulo", ""),
+                           int(ident.get("tamanho_titulo", 72)))
+    n = int(round(DUR_CARTAO * FPS))
+    nf = int(0.35 * FPS)
+
+    def gerar():
+        for k in range(n):
+            a = min(1.0, (k + 1) / nf, (n - k) / nf)
+            yield base if a >= 1 else (base.astype(np.float32) * a).astype(np.uint8)
+
+    return Segmento("cartao", DUR_CARTAO, np.zeros((int(round(DUR_CARTAO * SR)), 2), np.float32), gerar)
 
 
 # ------------------------------------------------------------------ legendas
@@ -292,81 +217,188 @@ def _grupos(palavras: list[dict], estilo: str) -> list[list[dict]]:
     return grupos
 
 
-def _ass_escape(t: str) -> str:
-    return t.replace("\\", "").replace("{", "(").replace("}", ")").replace("\n", " ")
-
-
-def gerar_ass(itens: list[tuple[float, dict]], leg: dict, W: int, H: int, nome_fonte: str) -> str:
-    """itens: (início do trecho na linha do tempo final, clipe). Retorna o texto do arquivo .ass."""
-    base = min(W, H) / 1080
+def eventos_legenda(itens: list[tuple[float, dict]], leg: dict) -> list[dict]:
+    """itens: (início do trecho na linha do tempo final, clipe) → eventos {a, b, palavras[(texto, destaque)]}."""
     estilo = leg.get("estilo", "Simples")
-    tam = int(leg.get("tamanho", 54) * base * (1.25 if estilo == "Palavra por palavra" else 1.0))
-    pos = leg.get("posicao", "Inferior")
-    vertical = H > W
-    alinh, margem = 2, int(H * 0.08)
-    if pos == "Abaixo do queixo":
-        margem = int(H * (0.30 if vertical else 0.12))
-    elif pos == "Centro":
-        alinh, margem = 5, 0
-    elif pos == "Superior":
-        alinh, margem = 8, int(H * 0.08)
-    cor, dest = _ass_cor(leg.get("cor", "#FFFFFF")), _ass_cor(leg.get("cor_destaque", "#FFFFFF"))
-    contorno = max(2, int(3 * base))
-    cab = (
-        "[Script Info]\nScriptType: v4.00+\nWrapStyle: 0\nScaledBorderAndShadow: yes\n"
-        f"PlayResX: {W}\nPlayResY: {H}\n\n[V4+ Styles]\n"
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
-        "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
-        "MarginR, MarginV, Encoding\n"
-        f"Style: Leg,{nome_fonte},{tam},{cor},{cor},&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{contorno},"
-        f"{max(1, int(2 * base))},{alinh},{int(W * 0.08)},{int(W * 0.08)},{margem},1\n\n"
-        "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
-    )
-
-    def ts(t: float) -> str:
-        t = max(0.0, t)
-        h, m = int(t // 3600), int(t % 3600 // 60)
-        return f"{h}:{m:02d}:{t % 60:05.2f}"
-
     eventos = []
     for inicio_tl, c in itens:
         destaques = [d.lower() for d in c.get("destaques", [])]
-        palavras = c.get("palavras") or []
         fim_clipe = inicio_tl + c["duracao"]
-        grupos = _grupos(palavras, estilo)
+        grupos = _grupos(c.get("palavras") or [], estilo)
         for gi, g in enumerate(grupos):
             a = inicio_tl + (g[0]["i"] - c["inicio"])
             prox = grupos[gi + 1][0]["i"] - c["inicio"] + inicio_tl if gi + 1 < len(grupos) else fim_clipe
             b = min(inicio_tl + (g[-1]["f"] - c["inicio"]) + 0.25, prox, fim_clipe)
             if b - a < 0.08:
                 continue
-            partes = []
+            ps = []
             for w in g:
-                txt = _ass_escape(w["p"])
+                txt = w["p"].strip()
                 limpo = txt.strip(".,!?;:\"'“”").lower()
-                eh_dest = any(limpo and (limpo in d.split() or d == limpo) for d in destaques)
-                if eh_dest and estilo != "Simples":
-                    if leg.get("caixa_alta_destaque"):
-                        txt = txt.upper()
-                    partes.append(f"{{\\c{dest}&\\fscx112\\fscy112}}{txt}{{\\r}}")
-                elif estilo == "Palavra por palavra" and leg.get("caixa_alta_destaque"):
-                    partes.append(txt.upper())
-                else:
-                    partes.append(txt)
-            eventos.append(f"Dialogue: 0,{ts(a)},{ts(b)},Leg,,0,0,0,,{' '.join(partes)}")
-    return cab + "\n".join(eventos) + "\n"
+                dest = estilo != "Simples" and any(limpo and (limpo in d.split() or d == limpo) for d in destaques)
+                if (dest or estilo == "Palavra por palavra") and leg.get("caixa_alta_destaque"):
+                    txt = txt.upper()
+                ps.append((txt, dest))
+            eventos.append({"a": max(0.0, a), "b": b, "palavras": ps})
+    return eventos
+
+
+class Legendas:
+    def __init__(self, eventos: list[dict], leg: dict, W: int, H: int, fam: str):
+        base = min(W, H) / 1080
+        estilo = leg.get("estilo", "Simples")
+        self.tam = int(leg.get("tamanho", 54) * base * (1.25 if estilo == "Palavra por palavra" else 1.0))
+        pos = leg.get("posicao", "Inferior")
+        vertical = H > W
+        self.alinh, self.margem = "baixo", int(H * 0.08)
+        if pos == "Abaixo do queixo":
+            self.margem = int(H * (0.30 if vertical else 0.12))
+        elif pos == "Centro":
+            self.alinh, self.margem = "centro", 0
+        elif pos == "Superior":
+            self.alinh, self.margem = "topo", int(H * 0.08)
+        self.eventos, self.leg, self.W, self.H, self.fam = sorted(eventos, key=lambda e: e["a"]), leg, W, H, fam
+        self.contorno = max(2, int(3 * base))
+        self._cache: dict[int, tuple[int, int, np.ndarray]] = {}
+
+    def aplicar(self, img: np.ndarray, t: float) -> np.ndarray:
+        for i, e in enumerate(self.eventos):
+            if e["a"] > t:
+                break
+            if e["a"] <= t < e["b"]:
+                if i not in self._cache:
+                    self._cache = {k: v for k, v in self._cache.items() if k >= i - 2}
+                    self._cache[i] = textdraw.legenda(e["palavras"], self.W, self.H, self.fam, self.tam,
+                                                      self.leg.get("cor", "#FFFFFF"),
+                                                      self.leg.get("cor_destaque", "#FFFFFF"),
+                                                      self.contorno, self.alinh, self.margem)
+                x, y, bgra = self._cache[i]
+                h, w = bgra.shape[:2]
+                h, w = min(h, img.shape[0] - y), min(w, img.shape[1] - x)
+                if h <= 0 or w <= 0:
+                    return img
+                img = img.copy()
+                reg = img[y:y + h, x:x + w].astype(np.float32)
+                a = bgra[:h, :w, 3:4].astype(np.float32) / 255.0
+                img[y:y + h, x:x + w] = (reg * (1 - a) + bgra[:h, :w, :3].astype(np.float32) * a).astype(np.uint8)
+                return img
+        return img
+
+
+# ------------------------------------------------------------------ áudio
+def _envelope(mono: np.ndarray, janela: int) -> np.ndarray:
+    n = len(mono) // janela
+    if n == 0:
+        return np.zeros(len(mono), np.float32)
+    rms = np.sqrt((mono[: n * janela].reshape(n, janela) ** 2).mean(axis=1))
+    env = np.repeat(rms, janela).astype(np.float32)
+    return np.concatenate([env, np.full(len(mono) - len(env), env[-1], np.float32)])
+
+
+def _suavizar(alvo: np.ndarray, ataque: float, soltura: float, passo: int) -> np.ndarray:
+    """Suavização tipo compressor, calculada por blocos (rápido)."""
+    blocos = alvo[::passo]
+    out = np.empty_like(blocos)
+    a_at = 1 - np.exp(-passo / (ataque * SR))
+    a_so = 1 - np.exp(-passo / (soltura * SR))
+    g = 1.0
+    for i, v in enumerate(blocos):
+        g += (v - g) * (a_at if v < g else a_so)
+        out[i] = g
+    return np.repeat(out, passo)[: len(alvo)]
+
+
+def _limitar(x: np.ndarray, t: float = 0.85) -> np.ndarray:
+    a = np.abs(x)
+    m = a > t
+    x[m] = np.sign(x[m]) * (t + (1 - t) * np.tanh((a[m] - t) / (1 - t)))
+    return x
+
+
+def _normalizar(x: np.ndarray, alvo_db: float = -16.0) -> np.ndarray:
+    bloco = int(0.4 * SR)
+    mono = x.mean(axis=1)
+    n = len(mono) // bloco
+    if n == 0:
+        return _limitar(x)
+    rms = np.sqrt((mono[: n * bloco].reshape(n, bloco) ** 2).mean(axis=1) + 1e-12)
+    db = 20 * np.log10(rms)
+    ativos = db[db > -50]
+    if len(ativos) == 0:
+        return x
+    atual = 10 * np.log10(np.mean(10 ** (ativos / 10)))
+    ganho = 10 ** (np.clip(alvo_db - atual, -20, 20) / 20)
+    return _limitar(x * ganho)
+
+
+def _montar_audio(segs: list[Segmento], inicios_q: list[int], total_q: int, T: int, plano: dict,
+                  avisos: list[str]) -> np.ndarray:
+    total = int(round(total_q / FPS * SR))
+    voz = np.zeros((total, 2), np.float32)
+    Ta = int(round(T / FPS * SR))
+    for k, s in enumerate(segs):
+        a = s.audio.copy()
+        n_ok = int(round(s.n / FPS * SR))
+        a = a[:n_ok] if len(a) >= n_ok else np.concatenate([a, np.zeros((n_ok - len(a), 2), np.float32)])
+        if Ta > 0 and len(a) > 2 * Ta:
+            r = np.linspace(0, 1, Ta, dtype=np.float32)[:, None]
+            if k > 0:
+                a[:Ta] *= r
+            if k < len(segs) - 1:
+                a[-Ta:] *= r[::-1]
+        ini = int(round(inicios_q[k] / FPS * SR))
+        fim = min(total, ini + len(a))
+        voz[ini:fim] += a[: fim - ini]
+
+    mix = voz.copy()
+    trilha = plano.get("trilha") or {}
+    if trilha.get("usar") and trilha.get("arquivo") and Path(trilha["arquivo"]).exists():
+        try:
+            mus = avtools.ler_audio(trilha["arquivo"], 0.0, None)
+        except avtools.AVErro as e:
+            mus = None
+            avisos.append(f"Não foi possível ler a trilha: {e}")
+        if mus is not None and len(mus):
+            reps = int(np.ceil(total / len(mus)))
+            mus = np.tile(mus, (reps, 1))[:total] * (max(0, min(100, trilha.get("volume", 20))) / 100)
+            fi, fo = min(total, SR), min(total, 2 * SR)
+            mus[:fi] *= np.linspace(0, 1, fi, dtype=np.float32)[:, None]
+            mus[total - fo:] *= np.linspace(1, 0, fo, dtype=np.float32)[:, None]
+            if trilha.get("abaixar_na_fala", True):
+                env = _envelope(voz.mean(axis=1), int(0.02 * SR))
+                alvo = np.where(env > 0.02, 0.25, 1.0).astype(np.float32)
+                mus *= _suavizar(alvo, 0.015, 0.45, 256)[:, None]
+            mix += mus
+    elif trilha.get("usar"):
+        avisos.append("Sem trilha: nenhum arquivo de música disponível na biblioteca do padrão.")
+
+    sfx_arqs = [s for s in plano.get("arquivos_sfx", []) if Path(s).exists()]
+    if plano.get("efeitos_sonoros") and sfx_arqs and len(segs) > 1:
+        escolhido = next((s for s in sfx_arqs if "whoosh" in Path(s).stem.lower()), sfx_arqs[0])
+        try:
+            sfx = avtools.ler_audio(escolhido, 0.0, None) * 0.45
+            for k in range(1, min(len(segs), 61)):
+                ini = max(0, int(round((inicios_q[k] / FPS - 0.15) * SR)))
+                fim = min(total, ini + len(sfx))
+                mix[ini:fim] += sfx[: fim - ini]
+        except avtools.AVErro as e:
+            avisos.append(f"Não foi possível ler o efeito sonoro: {e}")
+    elif plano.get("efeitos_sonoros") and not sfx_arqs:
+        avisos.append("Efeitos sonoros ativados, mas não há arquivos na biblioteca do padrão.")
+    return _normalizar(mix)
 
 
 # ------------------------------------------------------------------ renderização completa
 def renderizar(plano: dict, saida: str, opcoes: dict | None = None, progresso: Progresso = lambda m, f: None,
                cancelado: Callable[[], bool] = lambda: False) -> dict:
+    textdraw.garantir_qt()
     opcoes = opcoes or {}
     fmt = plano.get("formato") or {}
     W = _par(opcoes.get("largura") or fmt.get("largura") or 1920)
     H = _par(opcoes.get("altura") or fmt.get("altura") or 1080)
     qualidade = opcoes.get("qualidade", "Padrão")
     ident = plano.get("identidade") or {"cores": {}, "fonte_titulo": "", "fonte_texto": "", "tamanho_titulo": 72}
-    fundo = (ident.get("cores") or {}).get("fundo", "#000000")
+    fundo = _bgr((ident.get("cores") or {}).get("fundo", "#000000"))
     enquadramento = plano.get("enquadramento", "rosto")
     avisos: list[str] = []
     clipes = [c for c in plano.get("clipes", []) if c.get("duracao", 0) > 0.2]
@@ -377,144 +409,115 @@ def renderizar(plano: dict, saida: str, opcoes: dict | None = None, progresso: P
         raise RenderErro("Vídeos originais não encontrados (HD externo desconectado?):\n" + "\n".join(faltando))
     limpar_cache()
 
-    with tempfile.TemporaryDirectory(prefix="nimage_render_", ignore_cleanup_errors=True) as tmpd:
-        tmp = Path(tmpd)
-        segs: list[tuple[Path, dict | None]] = []   # (arquivo, clipe ou None p/ vinhetas/cartões)
-        total_passos = len(clipes) + 2
-
-        def passo(i: int, msg: str):
-            progresso(msg, 0.55 * i / total_passos)
-
-        # abertura
+    try:
+        # ----- preparar segmentos -----
+        progresso("Preparando os trechos (áudio e enquadramento)…", 0.0)
+        segs: list[Segmento] = []
         ab = plano.get("abertura") or {}
         if ab.get("tipo") == "Vinheta" and ab.get("arquivo") and Path(ab["arquivo"]).exists():
-            passo(0, "Preparando a vinheta de abertura…")
-            segs.append((_seg_vinheta(ab["arquivo"], W, H, fundo, cancelado), None))
+            segs.append(_seg_vinheta(ab["arquivo"], W, H, fundo))
         elif ab.get("tipo") == "Título":
-            passo(0, "Criando o cartão de título…")
-            segs.append((_seg_cartao("titulo", ab.get("texto") or plano.get("titulo", ""), None, ident, W, H, tmp,
-                                     "abertura", cancelado), None))
-        # trechos
+            segs.append(_seg_cartao(ab.get("texto") or plano.get("titulo", ""), None, ident, W, H))
         for i, c in enumerate(clipes, start=1):
             if cancelado():
                 raise RenderCancelado()
-            passo(i, f"Cortando e enquadrando o trecho {i} de {len(clipes)}…")
-            segs.append((_seg_trecho(c, W, H, enquadramento, cancelado), c))
-        # encerramento
+            progresso(f"Preparando o trecho {i} de {len(clipes)}…", 0.08 * i / len(clipes))
+            segs.append(_seg_trecho(c, W, H, enquadramento))
         en = plano.get("encerramento") or {}
-        passo(len(clipes) + 1, "Preparando o encerramento…")
         if en.get("tipo") == "Vinheta" and en.get("arquivo") and Path(en["arquivo"]).exists():
-            segs.append((_seg_vinheta(en["arquivo"], W, H, fundo, cancelado), None))
+            segs.append(_seg_vinheta(en["arquivo"], W, H, fundo))
         elif en.get("tipo") == "Logo" and en.get("arquivo") and Path(en["arquivo"]).exists():
-            segs.append((_seg_cartao("logo", "", en["arquivo"], ident, W, H, tmp, "encerramento", cancelado), None))
+            segs.append(_seg_cartao("", en["arquivo"], ident, W, H))
         elif en.get("tipo") == "Chamada para ação" and (en.get("texto") or "").strip():
-            segs.append((_seg_cartao("cta", en["texto"], None, ident, W, H, tmp, "encerramento", cancelado), None))
+            segs.append(_seg_cartao(en["texto"], None, ident, W, H))
 
-        duracoes = [media.probe(s)["duracao"] for s, _ in segs]
-
-        # transições
-        tipo_tr = plano.get("transicao", "Corte seco")
-        xf = TRANSICAO_XFADE.get(tipo_tr)
-        if xf and min(duracoes) < xf[1] * 3:
-            xf = None
+        # ----- linha do tempo e transições -----
+        xf = TRANSICAO_XFADE.get(plano.get("transicao", "Corte seco"))
+        T = int(round(xf[1] * FPS)) if xf else 0
+        if xf and len(segs) > 1 and min(s.n for s in segs) < 3 * T:
+            xf, T = None, 0
             avisos.append("Transições trocadas por cortes secos (há trechos curtos demais para transição).")
-        td = xf[1] if xf else 0.0
-        inicios, t = [], 0.0
-        for d in duracoes:
-            inicios.append(t)
-            t += d - td
-        total = t + td
+        if len(segs) == 1:
+            xf, T = None, 0
+        inicios_q, t = [], 0
+        for s in segs:
+            inicios_q.append(t)
+            t += s.n - T
+        total_q = t + T
 
-        # legendas
+        # ----- legendas -----
         leg = plano.get("legendas") or {}
-        tem_legenda = leg.get("ativar") and any(c and c.get("palavras") for _, c in segs)
-        if tem_legenda:
-            arq_fonte, achou = fonts.arquivo_ou_padrao(leg.get("fonte") or ident.get("fonte_texto", ""))
-            if not achou and (leg.get("fonte") or ident.get("fonte_texto")):
-                avisos.append(f"A fonte “{leg.get('fonte') or ident.get('fonte_texto')}” não está instalada neste "
-                              "computador; a legenda usou uma fonte comum.")
-            (tmp / "fontes").mkdir()
-            nome_fonte = "Arial"
-            if arq_fonte:
-                shutil.copy(arq_fonte, tmp / "fontes" / Path(arq_fonte).name)
-                nome_fonte = fonts.nome_familia(arq_fonte)
-            itens = [(inicios[k], c) for k, (_, c) in enumerate(segs) if c]
-            (tmp / "legendas.ass").write_text(gerar_ass(itens, leg, W, H, nome_fonte), encoding="utf-8")
+        legendas = None
+        if leg.get("ativar") and any(s.clipe and s.clipe.get("palavras") for s in segs):
+            nome_fonte = leg.get("fonte") or ident.get("fonte_texto", "")
+            fam, achou = textdraw.familia(nome_fonte)
+            if nome_fonte and not achou:
+                avisos.append(f"A fonte “{nome_fonte}” não está instalada neste computador; "
+                              "a legenda usou uma fonte comum.")
+            itens = [(inicios_q[k] / FPS, s.clipe) for k, s in enumerate(segs) if s.clipe]
+            legendas = Legendas(eventos_legenda(itens, leg), leg, W, H, fam)
 
-        # entradas
-        args: list[str] = []
-        for s, _ in segs:
-            args += ["-i", str(s)]
-        n = len(segs)
-        filtros: list[str] = [f"[{k}:v]settb=AVTB,fps={FPS},format=yuv420p,setsar=1[n{k}]" for k in range(n)]
-        if xf and n > 1:
-            vprev, aprev = "[n0]", "[0:a]"
-            for k in range(1, n):
-                off = inicios[k]
-                filtros.append(f"{vprev}[n{k}]xfade=transition={xf[0]}:duration={td}:offset={off:.3f}[vx{k}]")
-                filtros.append(f"{aprev}[{k}:a]acrossfade=d={td}[ax{k}]")
-                vprev, aprev = f"[vx{k}]", f"[ax{k}]"
-            vcad, acad = vprev, aprev
-        else:
-            filtros.append("".join(f"[n{k}][{k}:a]" for k in range(n)) + f"concat=n={n}:v=1:a=1[vc][ac]")
-            vcad, acad = "[vc]", "[ac]"
-        if tem_legenda:
-            filtros.append(f"{vcad}subtitles=legendas.ass:fontsdir=fontes[vl]")
-            vcad = "[vl]"
-        filtros.append(f"{vcad}format=yuv420p[vout]")
+        # ----- áudio -----
+        progresso("Mixando voz, trilha e efeitos…", 0.1)
+        audio = _montar_audio(segs, inicios_q, total_q, T, plano, avisos)
 
-        # áudio: voz + trilha (abaixa na fala) + efeitos sonoros
-        trilha = plano.get("trilha") or {}
-        mix = [acad]
-        extra_idx = n
-        if trilha.get("usar") and trilha.get("arquivo") and Path(trilha["arquivo"]).exists():
-            args += ["-stream_loop", "-1", "-i", trilha["arquivo"]]
-            vol = max(0.0, min(1.0, trilha.get("volume", 20) / 100))
-            filtros.append(f"{acad}asplit=2[voz][vozsc]")
-            filtros.append(f"[{extra_idx}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:{total:.3f},"
-                           f"asetpts=N/SR/TB,volume={vol:.3f},afade=t=in:d=1,"
-                           f"afade=t=out:st={max(total - 2, 0):.3f}:d=2[mus]")
-            if trilha.get("abaixar_na_fala", True):
-                filtros.append("[mus][vozsc]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=450:makeup=1[musd]")
-            else:
-                filtros.append("[vozsc]anullsink;[mus]anull[musd]")
-            mix = ["[voz]", "[musd]"]
-            extra_idx += 1
-        elif trilha.get("usar"):
-            avisos.append("Sem trilha: nenhum arquivo de música disponível na biblioteca do padrão.")
-        sfx = [s for s in plano.get("arquivos_sfx", []) if Path(s).exists()]
-        juncoes = [inicios[k] for k in range(1, n)][:60]
-        if plano.get("efeitos_sonoros") and sfx and juncoes:
-            escolhido = next((s for s in sfx if "whoosh" in Path(s).stem.lower()), sfx[0])
-            args += ["-i", escolhido]
-            filtros.append(f"[{extra_idx}:a]aresample=48000,aformat=channel_layouts=stereo,volume=0.45,"
-                           f"asplit={len(juncoes)}" + "".join(f"[sx{j}]" for j in range(len(juncoes))))
-            for j, tj in enumerate(juncoes):
-                ms = int(max(tj - 0.15, 0) * 1000)
-                filtros.append(f"[sx{j}]adelay={ms}|{ms}[sd{j}]")
-            filtros.append("".join(f"[sd{j}]" for j in range(len(juncoes))) +
-                           f"amix=inputs={len(juncoes)}:normalize=0:duration=longest[sfx]")
-            mix.append("[sfx]")
-            extra_idx += 1
-        elif plano.get("efeitos_sonoros") and not sfx:
-            avisos.append("Efeitos sonoros ativados, mas não há arquivos na biblioteca do padrão.")
-        if len(mix) > 1:
-            filtros.append("".join(mix) + f"amix=inputs={len(mix)}:normalize=0:duration=first[amix]")
-            amix = "[amix]"
-        else:
-            amix = mix[0]
-        filtros.append(f"{amix}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,atrim=0:{total:.3f}[aout]")
-
-        saida_tmp = tmp / "final.mp4"
-        progresso("Montando o vídeo final (transições, legendas, trilha)…", 0.56)
-        _ffmpeg(args + ["-filter_complex", ";".join(filtros), "-map", "[vout]", "-map", "[aout]",
-                        "-r", str(FPS), *_codec_video(qualidade), "-c:a", "aac", "-b:a", "192k",
-                        "-movflags", "+faststart", "-t", f"{total:.3f}", str(saida_tmp)],
-                total, lambda f: progresso("Montando o vídeo final (transições, legendas, trilha)…", 0.56 + 0.43 * f),
-                cancelado, cwd=str(tmp))
+        # ----- vídeo -----
         Path(saida).parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(saida_tmp), saida)
+        tmp_saida = str(Path(saida).with_name(Path(saida).stem + ".parcial.mp4"))
+        grav = avtools.Gravador(tmp_saida, W, H, FPS, audio, qualidade)
+        idx = 0
+        inicio_relogio = time.time()
+
+        def emitir(img):
+            nonlocal idx
+            if cancelado():
+                raise RenderCancelado()
+            if legendas:
+                img = legendas.aplicar(img, idx / FPS)
+            grav.quadro(img)
+            idx += 1
+            if idx % 15 == 0:
+                gasto = time.time() - inicio_relogio
+                resta = gasto / idx * (total_q - idx)
+                progresso(f"Gerando o vídeo… {idx / FPS:.0f} de {total_q / FPS:.0f} s "
+                          f"(faltam ~{max(resta, 0):.0f} s)", min(0.99, 0.12 + 0.87 * idx / total_q))
+
+        try:
+            pendentes: deque = deque()
+            for k, s in enumerate(segs):
+                gen = s.quadros()
+                ultimo = k == len(segs) - 1
+                if k > 0 and T > 0:
+                    for j in range(T):
+                        b = next(gen)
+                        a = pendentes.popleft()
+                        p = (j + 1) / (T + 1)
+                        if xf[0] == "fade":
+                            emitir((a.astype(np.float32) * (1 - p) + b.astype(np.float32) * p).astype(np.uint8))
+                        else:   # empurrar para a esquerda, com suavização
+                            p = p * p * (3 - 2 * p)
+                            off = max(1, int(W * p))
+                            img = np.empty_like(a)
+                            img[:, : W - off] = a[:, off:]
+                            img[:, W - off:] = b[:, :off]
+                            emitir(img)
+                buf: deque = deque()
+                for img in gen:
+                    buf.append(img)
+                    if len(buf) > (0 if ultimo else T):
+                        emitir(buf.popleft())
+                pendentes = buf
+            for img in pendentes:
+                emitir(img)
+            grav.fechar()
+        except BaseException:
+            grav.abortar()
+            Path(tmp_saida).unlink(missing_ok=True)
+            raise
+        Path(tmp_saida).replace(saida)
+    except avtools.AVErro as e:
+        raise RenderErro(str(e)) from e
     info = media.probe(saida)
     progresso("Vídeo pronto.", 1.0)
     return {"arquivo": saida, "duracao": info["duracao"], "largura": info["largura"], "altura": info["altura"],
-            "avisos": avisos, "codificador": "NVENC (placa de vídeo)" if nvenc_funciona() else "x264 (processador)"}
+            "avisos": avisos, "codificador": "NVENC (placa de vídeo)" if grav.nvenc else "x264 (processador)"}
