@@ -97,7 +97,7 @@ def autoteste_ui() -> int:
     from . import avtools
     app = QApplication(sys.argv)
     app.setStyleSheet(QSS)
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         os.environ["NIMAGE_DATA_DIR"] = d
         janela = MainWindow(Database())
         janela.show()
