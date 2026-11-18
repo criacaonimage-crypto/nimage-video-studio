@@ -87,11 +87,53 @@ def autoteste() -> int:
     return 0
 
 
+def autoteste_ui() -> int:
+    """Abre a janela, passa por todas as telas e carrega um vídeo no player (sem interação)."""
+    import tempfile
+    from pathlib import Path
+
+    import numpy as np
+    from PySide6.QtCore import QUrl
+    from . import avtools
+    app = QApplication(sys.argv)
+    app.setStyleSheet(QSS)
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["NIMAGE_DATA_DIR"] = d
+        janela = MainWindow(Database())
+        janela.show()
+        for i in range(6):
+            janela.ir_para(i)
+            app.processEvents()
+        v = Path(d) / "v.mp4"
+        g = avtools.Gravador(str(v), 320, 240, 25, np.zeros((avtools.SR, 2), np.float32), "Rascunho rápido")
+        for _ in range(25):
+            g.quadro(np.full((240, 320, 3), 128, np.uint8))
+        g.fechar()
+        janela.nova.adicionar_videos([str(v)])
+        import time
+        fim = time.time() + 20
+        while time.time() < fim and any(x is None for x in janela.nova.videos.values()):
+            app.processEvents()
+            time.sleep(0.05)
+        ok = len(janela.nova.videos_validos()) == 1
+        janela.ir_para(2)
+        janela.previa.abrir(str(v))
+        fim = time.time() + 5
+        while time.time() < fim:
+            app.processEvents()
+            time.sleep(0.05)
+        print(f"Interface OK · vídeo lido: {ok} · player: {'reserva' if janela.previa.modo_reserva else 'Qt'}", flush=True)
+        janela.close()
+    return 0 if ok else 1
+
+
 def main() -> int:
     if not getattr(sys, "argv", None):
         sys.argv = [sys.executable]
     if "--autoteste" in sys.argv or os.environ.get("NIMAGE_AUTOTESTE"):
         return autoteste()
+    if os.environ.get("NIMAGE_AUTOTESTE_UI"):
+        return autoteste_ui()
     _log_excecoes()
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)

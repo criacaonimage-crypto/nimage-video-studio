@@ -45,6 +45,16 @@ jobs:
           # Lançador: cópia do pythonw.exe oficial (mantém a assinatura digital da Python Software Foundation)
           Copy-Item "$raiz\programa\pythonw.exe" "$raiz\programa\NIMAGE VIDEO STUDIO.exe"
           python -m pip install --only-binary=:all: --target "$raiz\lib" -r requirements.txt
+          # Enxugar: menos arquivos = extração muito mais rápida (o antivírus examina um por um)
+          $antes = (Get-ChildItem $raiz -Recurse -File).Count
+          foreach ($d in "qml","translations","include","typesystems","glue","examples","doc","scripts") { Remove-Item "$raiz\lib\PySide6\$d" -Recurse -Force -ErrorAction SilentlyContinue }
+          Remove-Item "$raiz\lib\bin" -Recurse -Force -ErrorAction SilentlyContinue
+          Get-ChildItem "$raiz\lib\PySide6" -Filter *.exe | Remove-Item -Force
+          Get-ChildItem "$raiz\lib" -Recurse -Directory -Filter tests | Remove-Item -Recurse -Force
+          Get-ChildItem "$raiz\lib" -Recurse -Directory -Filter include | Remove-Item -Recurse -Force
+          Get-ChildItem "$raiz\lib" -Recurse -File -Include *.pyi,*.pxd,*.h,*.lib | Remove-Item -Force
+          $depois = (Get-ChildItem $raiz -Recurse -File).Count
+          Write-Host "Arquivos: $antes -> $depois"
           Copy-Item portatil\sitecustomize.py "$raiz\lib\"
           Copy-Item -Recurse nimage_studio "$raiz\app\nimage_studio"
           Copy-Item run.py "$raiz\app\"
@@ -63,6 +73,12 @@ jobs:
           $p = Start-Process -FilePath "portable\NimageVideoStudio\programa\NIMAGE VIDEO STUDIO.exe" -Wait -PassThru
           if (Get-Item -Path $alvo.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue) { Write-Error "Desbloqueio automático não removeu a marca"; exit 1 }
           Write-Host "Desbloqueio automático OK"
+          # interface completa + player do Qt na versão enxuta
+          $env:NIMAGE_AUTOTESTE = ""
+          $env:NIMAGE_AUTOTESTE_UI = "1"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          & "portable\NimageVideoStudio\programa\python.exe" "portable\NimageVideoStudio\app\run.py"
+          if ($LASTEXITCODE -ne 0) { Write-Error "Autoteste da interface falhou"; exit 1 }
           if ($p.ExitCode -ne 0) { Get-Content "$env:LOCALAPPDATA\NimageVideoStudio\erros.log" -ErrorAction SilentlyContinue; Write-Error "Autoteste pelo lançador falhou ($($p.ExitCode))"; exit 1 }
           Write-Host "Lançador OK"
 

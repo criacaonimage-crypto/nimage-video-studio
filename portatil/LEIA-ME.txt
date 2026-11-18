@@ -3,7 +3,8 @@ NIMAGE VIDEO STUDIO - VERSÃO PORTÁTIL (não precisa instalar)
 1. ANTES de descompactar: clique com o botão direito no arquivo .zip > Propriedades >
    marque "Desbloquear" (embaixo, na aba Geral) > OK.
 
-2. Descompacte numa pasta sua (ex.: Documentos\NimageVideoStudio).
+2. Descompacte numa pasta sua. Mais rápido (recomendado em PCs com antivírus da empresa):
+   abra o PowerShell na pasta do zip e rode:   tar -xf NimageVideoStudio-Portatil.zip
 
 3. Abra a pasta "programa" e dê dois cliques em "NIMAGE VIDEO STUDIO.exe".
    Dica: botão direito nele > Mostrar mais opções > Enviar para > Área de trabalho (criar atalho).
