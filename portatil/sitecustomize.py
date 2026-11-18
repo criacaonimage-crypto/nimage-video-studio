@@ -47,12 +47,22 @@ if Path(sys.executable).stem.lower().startswith("nimage"):
         codigo = main() or 0
     except SystemExit as e:
         codigo = e.code if isinstance(e.code, int) else 0
-    except BaseException:  # noqa: BLE001 - registra qualquer falha para diagnóstico
+    except BaseException:  # noqa: BLE001 - registra qualquer falha e mostra na tela
         import traceback
+        detalhe = traceback.format_exc()
         try:
             from nimage_studio import config
             with open(config.data_dir() / "erros.log", "a", encoding="utf-8") as f:
-                f.write(traceback.format_exc() + "\n")
+                f.write(detalhe + "\n")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            import ctypes
+            bloqueio = "Controle de Aplicativo" in detalhe or "4551" in detalhe
+            msg = ("O Windows (Controle de Aplicativo Inteligente) bloqueou uma parte do programa.\n\n"
+                   if bloqueio else "O NIMAGE VIDEO STUDIO não conseguiu abrir.\n\n")
+            msg += "\n".join(detalhe.strip().splitlines()[-4:]) + "\n\nTire um print desta mensagem e envie ao suporte."
+            ctypes.windll.user32.MessageBoxW(None, msg, "NIMAGE VIDEO STUDIO", 0x10)
         except Exception:  # noqa: BLE001
             pass
         codigo = 1

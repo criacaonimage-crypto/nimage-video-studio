@@ -4,7 +4,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QSpinBox
 
 from ..patterns import FORMATOS
-from ..renderer import QUALIDADES
+QUALIDADES = ("Alta", "Padrão", "Rascunho rápido")   # sem importar o motor (abre mais rápido)
 from .widgets import label
 
 DO_PROJETO = "Formato do projeto"
