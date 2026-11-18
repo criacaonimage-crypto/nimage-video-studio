@@ -7,6 +7,37 @@ import os
 import sys
 from pathlib import Path
 
+
+def _desbloquear_arquivos():
+    """Remove a marca "veio da internet" (Zone.Identifier) dos arquivos do programa, uma única vez.
+
+    Sem essa marca, o Windows não trata as bibliotecas do pacote como downloads desconhecidos.
+    Roda antes de qualquer biblioteca de terceiros ser carregada.
+    """
+    if os.name != "nt":
+        return
+    raiz = Path(sys.executable).resolve().parent.parent      # pasta NimageVideoStudio
+    marca = raiz / "lib" / ".desbloqueado"
+    if marca.exists():
+        return
+    for pasta in ("programa", "lib", "app"):
+        for dirpath, _dirs, arquivos in os.walk(raiz / pasta):
+            for nome in arquivos:
+                try:
+                    os.remove(os.path.join(dirpath, nome) + ":Zone.Identifier")
+                except OSError:
+                    pass
+    try:
+        marca.write_text("ok", encoding="ascii")
+    except OSError:
+        pass
+
+
+try:
+    _desbloquear_arquivos()
+except Exception:  # noqa: BLE001
+    pass
+
 if Path(sys.executable).stem.lower().startswith("nimage"):
     codigo = 0
     try:

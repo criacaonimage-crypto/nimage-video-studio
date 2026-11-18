@@ -56,7 +56,13 @@ jobs:
         shell: pwsh
         run: |
           $env:NIMAGE_AUTOTESTE = "1"
+          # simula arquivos baixados da internet (marca Zone.Identifier) para testar o desbloqueio automático
+          $alvo = Get-ChildItem portable\NimageVideoStudio\lib\numpy -Recurse -Filter *.pyd | Select-Object -First 1
+          Set-Content -Path $alvo.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
+          Remove-Item portable\NimageVideoStudio\lib\.desbloqueado -ErrorAction SilentlyContinue
           $p = Start-Process -FilePath "portable\NimageVideoStudio\programa\NIMAGE VIDEO STUDIO.exe" -Wait -PassThru
+          if (Get-Item -Path $alvo.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue) { Write-Error "Desbloqueio automático não removeu a marca"; exit 1 }
+          Write-Host "Desbloqueio automático OK"
           if ($p.ExitCode -ne 0) { Get-Content "$env:LOCALAPPDATA\NimageVideoStudio\erros.log" -ErrorAction SilentlyContinue; Write-Error "Autoteste pelo lançador falhou ($($p.ExitCode))"; exit 1 }
           Write-Host "Lançador OK"
 
@@ -87,7 +93,10 @@ jobs:
 
       - name: Compactar versão portátil
         shell: pwsh
-        run: Compress-Archive -Path portable\NimageVideoStudio -DestinationPath NimageVideoStudio-Portatil.zip
+        run: |
+          Remove-Item portable\NimageVideoStudio\lib\.desbloqueado -ErrorAction SilentlyContinue
+          Get-ChildItem -Recurse -Directory -Filter __pycache__ portable\NimageVideoStudio | Remove-Item -Recurse -Force
+          Compress-Archive -Path portable\NimageVideoStudio -DestinationPath NimageVideoStudio-Portatil.zip
 
       # ---------- instalador (para quando a TI liberar / com assinatura digital) ----------
       - name: Gerar executável
